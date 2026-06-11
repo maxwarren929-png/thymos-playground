@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hunger Games Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- === SETUP OVERLAY === -->
+<div id="setup-overlay">
+  <div id="setup-panel">
+    <h1 class="setup-title">HUNGER GAMES</h1>
+    <p class="setup-subtitle">SIMULATOR</p>
+
+    <div class="setup-row">
+      <label>Number of Tributes</label>
+      <div class="spinner-group">
+        <button id="count-down">-</button>
+        <span id="count-display">12</span>
+        <button id="count-up">+</button>
+      </div>
+    </div>
+
+    <div id="tribute-list"></div>
+
+    <button id="start-btn">START THE GAMES</button>
+  </div>
+</div>
+
+<!-- === VICTORY OVERLAY === -->
+<div id="victory-overlay" style="display:none">
+  <div id="victory-panel">
+    <div id="victory-crown">VICTORY</div>
+    <h2>THE VICTOR</h2>
+    <div id="winner-name"></div>
+    <div id="winner-district"></div>
+    <button id="view-recap-btn">VIEW RECAP</button>
+    <button id="restart-btn">PLAY AGAIN</button>
+  </div>
+</div>
+
+<!-- === RECAP OVERLAY === -->
+<div id="recap-overlay" style="display:none">
+  <div id="recap-panel">
+    <div id="recap-fallen-view">
+      <div class="recap-header">
+        <div class="recap-kicker">Game Complete</div>
+        <div class="recap-title">THE FALLEN</div>
+      </div>
+      <div id="recap-fallen-list"></div>
+      <div class="recap-controls">
+        <button id="recap-close-btn">BACK</button>
+        <button id="recap-highlights-btn">VIEW HIGHLIGHTS</button>
+      </div>
+    </div>
+
+    <div id="recap-highlight-view" style="display:none">
+      <div id="recap-counter"></div>
+      <div id="recap-tag"></div>
+      <div id="recap-highlight-card">
+        <canvas id="recap-replay-canvas" width="400" height="250" style="margin-bottom: 15px; border: 1px solid #333;"></canvas>
+        <div id="recap-main"></div>
+        <div id="recap-sub"></div>
+      </div>
+      <div id="recap-desc"></div>
+      <div class="recap-controls">
+        <button id="recap-prev-btn">PREVIOUS</button>
+        <button id="recap-next-btn">NEXT MOMENT</button>
+        <button id="recap-finish-btn">DONE</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- === GAME LAYOUT === -->
+<div id="game-wrapper">
+  <canvas id="game-canvas" width="960" height="540"></canvas>
+  <div id="info-panel">
+    <div id="info-title">HUNGER GAMES</div>
+    <div id="info-population">Alive: <span id="pop-count">0</span> / <span id="total-count">0</span></div>
+    <div id="death-log"></div>
+  </div>
+</div>
+
+<script src="js/sprite-loader.js"></script>
+<script src="js/peep.js"></script>
+<script src="js/cursor-entity.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

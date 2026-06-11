@@ -1,0 +1,601 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: #1a1a1e;
+  overflow: hidden;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  color: #ddd;
+}
+
+/* === SETUP SCREEN === */
+#setup-overlay {
+  position: fixed;
+  inset: 0;
+  background: #16161a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+#setup-panel {
+  background: #1e1e24;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 32px 40px;
+  width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+
+.setup-title {
+  text-align: center;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: #ffd700;
+  margin-bottom: 2px;
+}
+
+.setup-subtitle {
+  text-align: center;
+  font-size: 13px;
+  color: #666;
+  letter-spacing: 8px;
+  margin-bottom: 24px;
+}
+
+.setup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.setup-row label {
+  font-size: 14px;
+  color: #aaa;
+}
+
+.spinner-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.spinner-group button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #444;
+  background: #2a2a30;
+  color: #ddd;
+  font-size: 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.spinner-group button:hover {
+  background: #3a3a44;
+}
+
+#count-display {
+  font-size: 22px;
+  font-weight: bold;
+  color: #fff;
+  min-width: 36px;
+  text-align: center;
+}
+
+#tribute-list {
+  margin: 16px 0;
+  max-height: 360px;
+  overflow-y: auto;
+  border-top: 1px solid #2a2a30;
+  padding-top: 12px;
+}
+
+.tribute-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tribute-num {
+  font-size: 12px;
+  color: #666;
+  min-width: 24px;
+  text-align: right;
+}
+
+.tribute-row input[type="text"] {
+  flex: 1;
+  padding: 6px 10px;
+  background: #2a2a30;
+  border: 1px solid #3a3a44;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+}
+
+.tribute-row input[type="text"]:focus {
+  border-color: #ffd700;
+}
+
+.tribute-row input[type="number"] {
+  width: 50px;
+  padding: 6px;
+  background: #2a2a30;
+  border: 1px solid #3a3a44;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 13px;
+  text-align: center;
+  outline: none;
+}
+
+.tribute-row input[type="number"]:focus {
+  border-color: #ffd700;
+}
+
+.district-label {
+  font-size: 12px;
+  color: #666;
+  margin-left: 4px;
+}
+
+#start-btn {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  margin-top: 16px;
+  background: #c9a41a;
+  border: none;
+  border-radius: 8px;
+  color: #16161a;
+  font-size: 18px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+#start-btn:hover {
+  background: #e0b820;
+}
+
+/* === GAME LAYOUT === */
+#game-wrapper {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+#game-canvas {
+  border: none;
+  background: #000;
+  cursor: none;
+  image-rendering: auto;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+
+/* === INFO PANEL === */
+#info-panel {
+  width: 220px;
+  height: 540px;
+  background: #1a1a20;
+  border: 1px solid #2a2a34;
+  border-radius: 6px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#info-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #ffd700;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+
+#info-population {
+  font-size: 13px;
+  color: #999;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #2a2a30;
+}
+
+#info-population span {
+  color: #fff;
+  font-weight: bold;
+}
+
+/* === DEATH LOG === */
+#death-log {
+  flex: 1;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#death-log::-webkit-scrollbar {
+  width: 4px;
+}
+
+#death-log::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#death-log::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+
+.death-entry {
+  padding: 4px 0;
+  border-bottom: 1px solid #1e1e24;
+  color: #bbb;
+}
+
+.death-entry .killer {
+  color: #ff6b4a;
+  font-weight: 600;
+}
+
+.death-entry .victim {
+  color: #88ccff;
+  font-weight: 600;
+}
+
+.death-entry .weapon {
+  color: #ddd;
+}
+
+.death-entry.cannon {
+  color: #ffd700;
+  font-size: 11px;
+  padding: 6px 0;
+  text-align: center;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+/* === VICTORY OVERLAY === */
+#victory-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+#victory-panel {
+  background: #1e1e24;
+  border: 2px solid #ffd700;
+  border-radius: 16px;
+  padding: 40px 60px;
+  text-align: center;
+  box-shadow: 0 0 60px rgba(255,215,0,0.15);
+}
+
+#victory-crown {
+  font-size: 20px;
+  color: #ffd700;
+  letter-spacing: 5px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+#victory-panel h2 {
+  color: #ffd700;
+  font-size: 20px;
+  letter-spacing: 4px;
+  margin-bottom: 12px;
+}
+
+#winner-name {
+  font-size: 36px;
+  font-weight: 800;
+  color: #fff;
+  margin-bottom: 4px;
+}
+
+#winner-district {
+  font-size: 16px;
+  color: #999;
+  margin-bottom: 24px;
+}
+
+#restart-btn {
+  padding: 10px 32px;
+  background: #c9a41a;
+  border: none;
+  border-radius: 8px;
+  color: #16161a;
+  font-size: 15px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+#view-recap-btn {
+  padding: 10px 32px;
+  margin-right: 10px;
+  background: transparent;
+  border: 1px solid #c9a41a;
+  border-radius: 8px;
+  color: #ffd700;
+  font-size: 15px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+#view-recap-btn:hover {
+  background: #c9a41a;
+  color: #16161a;
+}
+
+#restart-btn:hover {
+  background: #e0b820;
+}
+
+/* === RECAP OVERLAY === */
+#recap-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#recap-panel {
+  width: min(960px, 94vw);
+  height: min(540px, 86vh);
+  background: radial-gradient(circle at center, #1a1a24 0%, #0a0a0e 100%);
+  border: 1px solid #333;
+  box-shadow: 0 0 80px rgba(0, 0, 0, 0.8);
+  position: relative;
+  overflow: hidden;
+  animation: recapFadeIn 0.55s ease-out;
+}
+
+#recap-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent 50%, rgba(0, 0, 0, 0.13) 50%);
+  background-size: 100% 4px;
+}
+
+@keyframes recapFadeIn {
+  from { opacity: 0; transform: scale(1.03); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.recap-header {
+  text-align: center;
+  padding: 38px 0 18px;
+}
+
+.recap-kicker {
+  color: #ffd700;
+  font-size: 12px;
+  letter-spacing: 8px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.recap-title {
+  color: #fff;
+  font-size: 40px;
+  font-weight: 900;
+  letter-spacing: 4px;
+}
+
+#recap-fallen-list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-content: flex-start;
+  gap: 18px;
+  height: calc(100% - 170px);
+  overflow-y: auto;
+  padding: 0 54px 18px;
+}
+
+.recap-fallen-card {
+  width: 120px;
+  text-align: center;
+  opacity: 0;
+  animation: recapCardReveal 0.7s ease-out forwards;
+}
+
+@keyframes recapCardReveal {
+  from { opacity: 0; transform: translateY(24px); filter: grayscale(1) brightness(0); }
+  to { opacity: 1; transform: translateY(0); filter: grayscale(1) brightness(0.7); }
+}
+
+.recap-portrait {
+  width: 78px;
+  height: 78px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  border: 2px solid #444;
+  color: #777;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  position: relative;
+}
+
+.recap-portrait::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  border-radius: 50%;
+}
+
+.recap-name {
+  color: #aaa;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.recap-detail {
+  color: #666;
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.recap-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 26px;
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+}
+
+.recap-controls button {
+  min-width: 124px;
+  padding: 10px 20px;
+  background: transparent;
+  border: 1px solid #ffd700;
+  color: #ffd700;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+
+.recap-controls button:hover:not(:disabled) {
+  background: #ffd700;
+  color: #0a0a0e;
+}
+
+.recap-controls button:disabled {
+  border-color: #333;
+  color: #333;
+  cursor: not-allowed;
+}
+
+#recap-highlight-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  animation: recapSlideIn 0.35s ease-out;
+}
+
+@keyframes recapSlideIn {
+  from { opacity: 0; transform: translateX(38px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+#recap-counter {
+  position: absolute;
+  right: 38px;
+  top: 20px;
+  color: #666;
+  font-size: 12px;
+  letter-spacing: 2px;
+}
+
+#recap-tag {
+  background: #ff473f;
+  color: #fff;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+
+#recap-highlight-card {
+  width: min(600px, 80vw);
+  min-height: 250px;
+  background: repeating-linear-gradient(45deg, #111, #111 10px, #16161a 10px, #16161a 20px);
+  border: 1px solid #333;
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 28px;
+}
+
+#recap-main {
+  color: #ff473f;
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+#recap-sub {
+  color: #ccc;
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 430px;
+}
+
+#recap-desc {
+  color: #ffd700;
+  font-size: 17px;
+  font-style: italic;
+  min-height: 24px;
+  margin-top: 20px;
+}
+
+@media (max-width: 860px) {
+  html, body {
+    overflow: auto;
+  }
+
+  #game-wrapper {
+    position: static;
+    min-height: 100%;
+    flex-direction: column;
+    padding: 12px;
+    justify-content: flex-start;
+  }
+
+  #info-panel {
+    width: min(100%, 960px);
+    height: 180px;
+  }
+
+  #setup-panel {
+    width: min(94vw, 520px);
+    padding: 24px 18px;
+  }
+}
