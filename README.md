@@ -14,4 +14,6 @@ This project is configured to deploy via GitHub Pages:
 2. Go to **Settings** > **Pages**.
 3. Under **Build and deployment** > **Source**, ensure "Deploy from a branch" is selected.
 4. Set the branch to `master` (or `main`) and the folder to `/(root)`.
-5. Click **Save**. The simulator will be live at `https://[your-username].github.io/hunger-games-sim/`.
+5. Click **Save**.
+
+The simulator is live at: [https://maxwarren929-png.github.io/hunger-games-sim/](https://maxwarren929-png.github.io/hunger-games-sim/)
