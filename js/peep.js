@@ -45,6 +45,7 @@ class Peep {
     this.attackTime = 0;
     this.attackApplied = false;
     this.attackTarget = null;
+    this.loverId = null;
     this.wanderAngle = Math.random() * Math.PI * 2;
     this.wanderTime = 0;
     this.hop = Math.random();
@@ -56,23 +57,62 @@ class Peep {
     this.allianceId = null;
     this.lastAllianceProposal = new Map();
     this.betrayalCooldown = randomRange(2, 5);
+
+    // Abilities & Traits
+    this.isFlying = false;
+    this.hasLaserEyes = false;
+    this.applyTraits(config.traits || []);
+
     this.profile = Peep.createProfile(this.stats);
     this.openingGoal = this.chooseOpeningGoal();
     this.goal = this.openingGoal;
     this.retreatAngle = Math.atan2(this.y - 900, this.x - 1500) + randomRange(-0.6, 0.6);
   }
 
-  static createStats(overrides = {}) {
-    const stat = () => 1 + Math.floor(Math.random() * 10);
-    return {
-      strength: clampStat(overrides.strength ?? stat()),
-      speed: clampStat(overrides.speed ?? stat()),
-      eyesight: clampStat(overrides.eyesight ?? stat()),
-      loyalty: clampStat(overrides.loyalty ?? stat()),
-      aggression: clampStat(overrides.aggression ?? stat()),
-      friendliness: clampStat(overrides.friendliness ?? stat()),
-    };
+  applyTraits(traitNames) {
+    traitNames.forEach(name => {
+        const trait = TRAIT_LIBRARY[name.toLowerCase()];
+        if (!trait) return;
+        if (trait.stats) Object.assign(this.stats, trait.stats);
+        if (trait.abilities) Object.assign(this, trait.abilities);
+        if (trait.startingWeapon) this.equipWeapon(trait.startingWeapon);
+    });
   }
+
+    // --- ROMANCE LOGIC ---
+    tryFallInLove(peeps, world) {
+      if (this.loverId) return;
+      for (const other of peeps) {
+        if (other === this || other.loverId || !other.alive) continue;
+        const rel = this.relationshipWith(other);
+        const dist = Math.hypot(other.x - this.x, other.y - this.y);
+        if (dist < 120 && rel.trust > 80 && rel.bond > 70) {
+          this.loverId = other.id;
+          other.loverId = this.id;
+          world.logEvent({
+              type: "romance",
+              proposer: this.name,
+              candidate: other.name,
+              timestamp: performance.now(),
+              x: this.x,
+              y: this.y
+          });
+        }
+      }
+    }
+
+    isLover(other) {
+      return this.loverId === other.id;
+    }
+    // --- END ROMANCE LOGIC ---
+
+    static createStats(overrides = {}) {
+      const stats = {};
+      for (const [name, config] of Object.entries(STAT_REGISTRY)) {
+          stats[name] = clampStat(overrides[name] ?? (config.min + Math.floor(Math.random() * (config.max - config.min + 1))));
+      }
+      return stats;
+    }
 
   static createProfile(stats) {
     const roll = Math.random();
@@ -242,13 +282,16 @@ class Peep {
   }
 
   die() {
+    const weaponConfig = WEAPON_REGISTRY[this.weapon];
+    const canDrop = weaponConfig ? weaponConfig.droppable : true;
+
     return {
       id: this.id,
       name: this.name,
       district: this.district,
       x: this.x,
       y: this.y,
-      weapon: this.weapon,
+      weapon: canDrop ? this.weapon : null,
       side: this.bodyFrame,
       kills: this.kills,
       killedBy: this._deathBy,
@@ -280,7 +323,7 @@ class Peep {
     }
 
     const aliveCount = world.peeps.filter(p => p.alive).length;
-    const infiniteEyes = aliveCount <= 3;
+    const infiniteEyes = aliveCount <= 3 || this.hasLaserEyes;
 
     const threatRange = infiniteEyes ? Infinity : this.profile.enemyAwareness;
     const threat = this.findNearestEnemy(world.peeps, world, threatRange);
@@ -300,9 +343,22 @@ class Peep {
     const enemy = this.findNearestEnemy(world.peeps, world, huntRange);
     const weapon = !this.hasWeapon ? this.findNearestWeapon(world.groundWeapons, infiniteEyes) : null;
     const ally = this.findRegroupAlly(world);
+    
+    // Defender Mode: Find lover in trouble
+    let loverInTrouble = null;
+    if (this.loverId) {
+      const lover = world.peeps.find(p => p.id === this.loverId && p.alive);
+      if (lover && lover.state === "attack") {
+        loverInTrouble = lover;
+      }
+    }
 
     if (!this.openingComplete && world.elapsed < 4.5) {
       this.executeOpeningGoal(dt, world, weapon);
+    } else if (loverInTrouble) {
+      this.setGoal("defend", loverInTrouble, world);
+      this.setState("charge");
+      this.moveToward(loverInTrouble.x, loverInTrouble.y, 2.75, dt);
     } else if (enemy.target) {
       this.setGoal("hunt", enemy.target, world);
       this.setState("charge");
@@ -400,11 +456,17 @@ class Peep {
 
   findRegroupAlly(world) {
     if (!this.allianceId || this.health <= 1) return null;
+    
+    // Hysteresis: if already regrouping, don't drop the goal unless very far away
+    const minRange = this.state === "regroup" ? 80 : 130;
+    const maxRange = this.profile.enemyAwareness * (this.state === "regroup" ? 1.4 : 1.15);
+
     const allies = world.peeps
       .filter((peep) => peep.alive && peep !== this && this.isAlliedWith(peep, world))
       .map((peep) => ({ peep, dist: Math.hypot(peep.x - this.x, peep.y - this.y) }))
-      .filter((item) => item.dist > 130 && item.dist < this.profile.enemyAwareness * 1.15)
+      .filter((item) => item.dist > minRange && item.dist < maxRange)
       .sort((a, b) => a.dist - b.dist);
+    
     if (!allies.length) return null;
     const wantsCompany = this.stats.friendliness + this.stats.loyalty >= 11 || this.health <= 2;
     return wantsCompany ? allies[0].peep : null;
@@ -502,6 +564,7 @@ class Peep {
   }
 
   shouldFlee(threat) {
+    if (this.name.toLowerCase() === "superman") return false;
     if (!threat.target) return false;
     
     let fleeRange = this.hasWeapon ? this.profile.fleeRangeArmed : this.profile.fleeRangeUnarmed;
@@ -560,6 +623,12 @@ class Peep {
       }
       this.attackApplied = true;
     }
+    if (this.hasLaserEyes) {
+        this.attackTarget.takeDamage(100, this);
+        this.attackTarget.remember("attacked_me", this, 1);
+        this.setState("charge");
+        return;
+    }
 
     if (this.attackTime >= 0.42) this.setState("charge");
     this.animate(0.5, dt);
@@ -572,18 +641,15 @@ class Peep {
   }
 
   getAttackRange() {
-    if (this.weapon === "gun") return 180;
-    if (this.weapon === "shotgun") return 125;
-    if (this.weapon === "axe") return 56;
-    if (this.weapon === "bat") return 52;
-    return 42;
+    const weaponConfig = WEAPON_REGISTRY[this.weapon];
+    return weaponConfig ? weaponConfig.range : WEAPON_REGISTRY.fists.range;
   }
 
   getDamage() {
     const meleeBonus = Math.max(0, Math.floor((this.stats.strength - 5) / 3));
-    if (!this.weapon) return 1 + meleeBonus;
-    if (this.weapon === "gun" || this.weapon === "shotgun") return 3;
-    return 3 + meleeBonus;
+    const weaponConfig = WEAPON_REGISTRY[this.weapon];
+    if (!weaponConfig || this.weapon === "fists") return WEAPON_REGISTRY.fists.damage + meleeBonus;
+    return weaponConfig.damage + meleeBonus;
   }
 
   pickUpWeapon(groundWeapons) {
@@ -648,13 +714,15 @@ class Peep {
     if (!this.alive) return;
     const phase = Math.sin(this.hop * Math.PI * 2);
     const bounce = 1 + Math.max(0, -phase) * 0.08;
-    const bob = Math.abs(phase) * 10;
+    const bob = this.isFlying ? -20 : Math.abs(phase) * 10;
     const rotation = phase * 0.1;
     const scaleX = 0.65 * bounce * this.flip;
     const scaleY = 0.65 / bounce;
     
     const bodyAtlas = sprites.get("body");
     const redAtlas = sprites.get("body_red");
+    const loveHatAtlas = sprites.get("lovehat");
+    const loverShirtAtlas = sprites.get("lover_shirt");
     
     // Choose face atlas based on state
     let faceAtlasName = "face";
@@ -668,8 +736,13 @@ class Peep {
     ctx.save();
     ctx.translate(this.x, this.y - bob);
     
+    // Draw body base + red overlay + love assets
     const drewBody = bodyAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
     if (this.isRed) redAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
+    if (this.loverId) {
+        loverShirtAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
+        loveHatAtlas?.draw(ctx, "lovehat4", 0, -60, { scaleX: scaleX * 1.5, scaleY: scaleY * 1.5, rotation });
+    }
     
     this.renderFace(ctx, faceAtlas, faceAtlasName, faceFrame, scaleX, scaleY, rotation);
     if (!drewBody) this.drawFallback(ctx);
@@ -707,7 +780,22 @@ class Peep {
   }
 
   renderWeapon(ctx, sprites) {
-    const atlas = sprites.get(`weapons_${this.weapon}`);
+    if (this.hasLaserEyes && this.state === "attack") {
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 0, 0, 0.8)";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y - 20);
+        ctx.lineTo(this.attackTarget.x, this.attackTarget.y - 20);
+        ctx.stroke();
+        ctx.restore();
+        return;
+    }
+
+    const weaponConfig = WEAPON_REGISTRY[this.weapon];
+    if (!weaponConfig || !weaponConfig.atlas) return;
+    
+    const atlas = sprites.get(weaponConfig.atlas);
     const isAttacking = this.state === "attack" && this.attackTime < 0.28;
     const frame = isAttacking ? 6 : 4;
     const offsetX = this.flip * 24;
@@ -771,6 +859,8 @@ class Peep {
       faceFrame: this.faceFrame,
       weapon: this.weapon,
       isRed: this.isRed,
+      isFlying: this.isFlying,
+      loverId: this.loverId,
       bodyFrame: this.bodyFrame,
       alive: this.alive,
       attackTargetX: this.attackTarget?.x,
@@ -783,7 +873,7 @@ class Peep {
     
     const phase = Math.sin(snapshot.hop * Math.PI * 2);
     const bounce = 1 + Math.max(0, -phase) * 0.08;
-    const bob = Math.abs(phase) * 10;
+    const bob = snapshot.isFlying ? -20 : Math.abs(phase) * 10;
     const rotation = phase * 0.1;
     const scaleX = 0.65 * bounce * snapshot.flip;
     const scaleY = 0.65 / bounce;
@@ -804,6 +894,14 @@ class Peep {
     // Body
     bodyAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
     if (snapshot.isRed) redAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
+    
+    // Romance
+    if (snapshot.loverId) {
+        const loverShirtAtlas = sprites.get("lover_shirt");
+        const loveHatAtlas = sprites.get("lovehat");
+        loverShirtAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
+        loveHatAtlas?.draw(ctx, "lovehat4", 0, -60, { scaleX: scaleX * 1.5, scaleY: scaleY * 1.5, rotation });
+    }
     
     // Face
     const faceY = -12;

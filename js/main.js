@@ -1,7 +1,11 @@
 const canvas = document.getElementById("game-canvas");
 const ctx = canvas.getContext("2d");
 
-const WORLD = { width: 3000, height: 1800, center: { x: 1500, y: 900 } };
+const WORLD = { 
+  width: GAME_CONSTANTS.worldDimensions.width, 
+  height: GAME_CONSTANTS.worldDimensions.height, 
+  center: { x: GAME_CONSTANTS.worldDimensions.width / 2, y: GAME_CONSTANTS.worldDimensions.height / 2 } 
+};
 const sprites = new SpriteLayers();
 let bgImage = null;
 let tributeCount = 12;
@@ -236,6 +240,9 @@ function registerAtlases() {
   sprites.add("weapons_bat", `${peeps}/weapon_bat.json`, `${peeps}/weapon_bat.png`);
   sprites.add("weapons_shotgun", `${peeps}/weapon_shotgun.json`, `${peeps}/weapon_shotgun.png`);
   sprites.add("weapons_axe", `${peeps}/weapon_axe.json`, `${peeps}/weapon_axe.png`);
+  sprites.add("lovehat", `${peeps}/lovehat.json`, `${peeps}/lovehat.png`);
+  sprites.add("lover_shirt", `${peeps}/lover_shirt.json`, `${peeps}/lover_shirt.png`);
+  sprites.add("lover_panic", `${peeps}/lover_panic.json`, `${peeps}/lover_panic.png`);
   sprites.add("gore_bodies", `${peeps}/gore_bodies.json`, `${peeps}/gore_bodies.png`);
   sprites.add("gore", `${peeps}/gore.json`, `${peeps}/gore.png`);
   sprites.add("blood", `${peeps}/blood.json`, `${peeps}/blood.png`);
@@ -285,11 +292,19 @@ function setTributeCount(count) {
 
 function readTributeConfigs() {
   const rows = [...els.tributeList.querySelectorAll(".tribute-row")];
-  const configs = rows.map((row, index) => ({
-    id: index,
-    name: row.querySelector(".tribute-name").value.trim(),
-    district: Number(row.querySelector(".tribute-district").value),
-  }));
+  const configs = rows.map((row, index) => {
+    let nameRaw = row.querySelector(".tribute-name").value.trim();
+    const district = Number(row.querySelector(".tribute-district").value);
+    
+    // Extract traits in (TraitName) format
+    const traits = [];
+    const name = nameRaw.replace(/\(([^)]+)\)/g, (match, p1) => {
+      traits.push(p1);
+      return "";
+    }).trim();
+
+    return { id: index, name, district, traits };
+  });
 
   const invalid = configs.find((config) => !config.name || !Number.isFinite(config.district) || config.district < 1);
   if (invalid) {
@@ -308,7 +323,7 @@ function startGame(configs) {
   state.rollingHistory = [];
   state.highlights = [];
   state.currentHighlightIdx = 0;
-  state.dayTimer = 60;
+  state.dayTimer = GAME_CONSTANTS.dayLength;
   state.currentDay = 1;
   state.isNight = false;
   state.hitEvents = [];
@@ -331,7 +346,15 @@ function startGame(configs) {
 
   configs.forEach((config, index) => {
     const angle = (index / configs.length) * Math.PI * 2;
-    const radius = 460;
+    const radius = GAME_CONSTANTS.spawnRadius;
+    
+    // Apply character preset if name matches
+    const charPreset = CHARACTER_LIBRARY[config.name.toLowerCase()];
+    if (charPreset) {
+        config.traits = [...(config.traits || []), ...charPreset.traits];
+        config.stats = { ...charPreset.stats, ...(config.stats || {}) };
+    }
+    
     state.peeps.push(new Peep(config, WORLD.center.x + Math.cos(angle) * radius, WORLD.center.y + Math.sin(angle) * radius));
   });
   state.peeps.forEach((peep) => {
@@ -505,6 +528,14 @@ function createWorldContext() {
     betrayalPressure: getBetrayalPressure(),
     elapsed: (performance.now() - gameStartTime) / 1000,
     logGoal,
+    logEvent: (eventData) => {
+        state.pendingEvents.push({
+            triggerTime: performance.now() + 1000,
+            x: eventData.x,
+            y: eventData.y,
+            data: { ...eventData, day: state.currentDay }
+        });
+    }
   };
 }
 
@@ -540,16 +571,42 @@ function processDeaths() {
   for (const peep of state.peeps) {
     if (peep.alive || state.processedDeaths.has(peep.id)) continue;
     state.processedDeaths.add(peep.id);
+    
+    // Heartbreak Check
+    if (peep.loverId) {
+        const lover = state.peeps.find(p => p.id === peep.loverId && p.alive);
+        if (lover) {
+            state.pendingEvents.push({
+                triggerTime: performance.now() + 1000,
+                x: peep.x,
+                y: peep.y,
+                data: {
+                    type: "heartbreak",
+                    victim: peep.name,
+                    survivor: lover.name,
+                    timestamp: performance.now(),
+                    day: state.currentDay
+                }
+            });
+            lover.state = "panic";
+        }
+    }
+    
     const data = peep.die();
 
     // Record event for recap
-    state.allEvents.push({
-      type: "death",
-      victim: data,
-      killer: data.killedBy,
-      timestamp: performance.now(),
-      clip: captureClip(data.x, data.y),
-      mugshot: peep.mugshot
+    state.pendingEvents.push({
+      triggerTime: performance.now() + 1000,
+      x: data.x,
+      y: data.y,
+      data: {
+        type: "death",
+        victim: data,
+        killer: data.killedBy,
+        timestamp: performance.now(),
+        day: state.currentDay,
+        mugshot: peep.mugshot
+      }
     });
 
     if (data.weapon) {
@@ -1193,6 +1250,14 @@ function escapeAttr(value) {
 // === RECAP LOGIC ===
 
 function showRecap() {
+  // Force process any pending events before showing recap
+  const now = performance.now();
+  state.pendingEvents.forEach(e => {
+      e.data.clip = captureClip(e.x, e.y);
+      state.allEvents.push(e.data);
+  });
+  state.pendingEvents = [];
+
   const isEndGame = gameState === "ended";
   gameState = "recap";
   
@@ -1234,6 +1299,7 @@ function showFallenView() {
   const deaths = state.allEvents.filter((e) => {
     if (e.type !== "death") return false;
     if (isEndGame) return true; // Show all on game over
+    // Check if the event day matches the current day
     return e.day === state.currentDay;
   });
 
@@ -1322,6 +1388,8 @@ function generateHighlights() {
   const isEndGame = gameState === "ended";
   const events = isEndGame ? state.allEvents : state.allEvents.filter(e => e.day === state.currentDay);
   
+  console.log(`Generating highlights for day ${state.currentDay}. Found ${events.length} events.`);
+  
   // 1. Bloodbath (deaths in first 10s of Day 1)
   const bloodbathDeaths = events.filter(e => e.type === "death" && (e.timestamp - gameStartTime) < 10000);
   if (bloodbathDeaths.length >= 3) {
@@ -1368,5 +1436,30 @@ deathEvents.forEach(d => {
     clip: d.clip
   });
 });
-  return highlights; // Return all significant events found
+
+// 5. Romance
+const romances = events.filter(e => e.type === "romance");
+romances.forEach(r => {
+  highlights.push({
+    tag: "Romance",
+    main: "FORBIDDEN LOVE",
+    sub: `${r.proposer} and ${r.candidate} have fallen in love.`,
+    desc: "A moment of peace in the madness.",
+    clip: null // No clip for romance yet
+  });
+});
+
+// 6. Heartbreak
+const heartbreaks = events.filter(e => e.type === "heartbreak");
+heartbreaks.forEach(h => {
+  highlights.push({
+    tag: "Tragedy",
+    main: "HEARTBROKEN",
+    sub: `${h.survivor} is devastated by the loss of ${h.victim}.`,
+    desc: "The cruelest part of the game.",
+    clip: null
+  });
+});
+
+return highlights; // Return all significant events found
 }
