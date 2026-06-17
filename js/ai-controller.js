@@ -52,6 +52,8 @@ JSON Format:
   "memorySummary": "1-sentence summary of your situation"
 }`;
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
     try {
       let response;
       let text;
@@ -59,7 +61,7 @@ JSON Format:
       if (isGithub) {
         response = await fetch(CONSTANTS.AI.GITHUB_ENDPOINT, {
           method: 'POST',
-          headers: { 
+          headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${world.apiKey}`
           },
@@ -68,22 +70,26 @@ JSON Format:
               { role: "system", content: "You are a Hunger Games simulator agent. You MUST respond with a single JSON object. No prose, no markdown blocks." },
               { role: "user", content: systemPrompt }
             ],
-            model: CONSTANTS.AI.MODEL_GITHUB, 
+            model: CONSTANTS.AI.MODEL_GITHUB,
             temperature: CONSTANTS.AI.TEMPERATURE,
             max_tokens: CONSTANTS.AI.MAX_TOKENS,
             response_format: { type: "json_object" }
-          })
+          }),
+          signal: controller.signal
         });
         if (!response.ok) throw new Error(`GitHub API error: ${response.status}`);
         const data = await response.json();
         text = data.choices?.[0]?.message?.content;
       } else {
         // Standard Google Gemini logic
+        // NOTE: Gemini requires the API key in the query parameter. This exposes the key
+        // in browser history and referrer headers. Use a backend proxy for production.
         const url = `${CONSTANTS.AI.GEMINI_ENDPOINT_TEMPLATE}?key=${world.apiKey}`;
         response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: systemPrompt }] }] })
+          body: JSON.stringify({ contents: [{ parts: [{ text: systemPrompt }] }] }),
+          signal: controller.signal
         });
         if (!response.ok) throw new Error(`Gemini API error: ${response.status}`);
         const data = await response.json();
@@ -91,6 +97,7 @@ JSON Format:
         text = data.candidates[0].content.parts[0].text;
       }
 
+      clearTimeout(timeoutId);
       const firstBrace = text.indexOf("{");
       const lastBrace = text.lastIndexOf("}");
       if (firstBrace !== -1 && lastBrace !== -1) {
@@ -99,7 +106,8 @@ JSON Format:
       }
       throw new Error("No JSON object found in AI response");
     } catch (error) {
-      console.error("🧠 AI Brain Error:", error);
+      clearTimeout(timeoutId);
+      if (DEBUG) console.error("🧠 AI Brain Error:", error);
       return null;
     }
   }

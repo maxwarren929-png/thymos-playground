@@ -89,7 +89,7 @@ class SpriteLayers {
       [...this.atlases.values()].map((atlas) => atlas.load())
     );
     results.forEach((result) => {
-      if (result.status === "rejected") console.warn(result.reason);
+      if (result.status === "rejected" && DEBUG) console.warn(result.reason);
     });
   }
 }

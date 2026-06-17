@@ -98,6 +98,21 @@ class Peep {
     this.lastLootShoutAt = 0;
     this.sharedLootTarget = null;
 
+    // Gossip System
+    this.gossipMemories = [];
+    this.gossipCooldown = 0;
+    this.knownLiars = new Set();
+
+    // Conversation Thread System
+    this.activeThreads = new Map(); // otherId -> { topic, intensity, lastSpeakerId, turns, expiry }
+    this.lastShoutTopic = null;
+    this.lastShoutTargetId = null;
+
+    // Emotional Mood
+    this.dialogueMood = "calm";
+    this.moodStability = 0; // how long current mood has held (seconds)
+    this.stressLevel = 0; // 0-1 accumulated per tick
+
     // AI Brain Properties
     this.isAI = !!config.isAI;
     this.aiMemorySummary = "I have just entered the arena. I must survive.";
@@ -123,9 +138,17 @@ class Peep {
     this.lastShoutTime = performance.now();
   }
 
-  static randomLine(pool, weapon = null) {
-    const line = pool[Math.floor(Math.random() * pool.length)];
-    return weapon ? line.replace("{weapon}", weapon) : line;
+  static randomLine(pool, context = {}) {
+    for (let attempts = 0; attempts < 3; attempts++) {
+      const line = pool[Math.floor(Math.random() * pool.length)];
+      const tokens = line.match(/{(\w+)}/g);
+      if (!tokens) return line;
+      const allResolvable = tokens.every(t => context[t.slice(1, -1)] !== undefined);
+      if (allResolvable) return line.replace(/{(\w+)}/g, (match, key) => context[key]);
+    }
+    const safeLine = pool.find(l => !l.includes('{'));
+    if (safeLine) return safeLine;
+    return pool[0].replace(/{(\w+)}/g, (match, key) => context[key] ?? match);
   }
 
   static DIALOGUE = {
@@ -142,6 +165,11 @@ class Peep {
       "I'll make you regret that!",
       "You're dead meat!",
       "For my ally!",
+      "{killer}, you'll pay for that!",
+      "That was my friend, {killer}!",
+      "I'll make you regret that, {killer}!",
+      "You're dead meat, {killer}!",
+      "For my ally! I'll get you, {killer}!",
     ],
     fleeing: [
       "Fall back!",
@@ -149,6 +177,11 @@ class Peep {
       "I'm out!",
       "Too hot!",
       "Getting out of here!",
+      "Fall back from {enemy}!",
+      "Not worth it against {enemy}!",
+      "I'm out, {enemy} too strong!",
+      "Too hot, {enemy} is coming!",
+      "Getting out of here! {enemy} is hunting me!",
     ],
     defend: [
       "I've got your back!",
@@ -156,6 +189,11 @@ class Peep {
       "Hang in there!",
       "On my way!",
       "Don't worry!",
+      "I've got your back, {ally}!",
+      "I'm coming, {ally}!",
+      "Hang in there, {ally}!",
+      "On my way to you, {ally}!",
+      "Don't worry, {ally}, I'm here!",
     ],
     attack: [
       "Flank them!",
@@ -163,6 +201,11 @@ class Peep {
       "Attack now!",
       "Move in!",
       "Together!",
+      "Flank {enemy}!",
+      "Get {enemy}!",
+      "Attack {enemy} now!",
+      "Move in on {enemy}!",
+      "Together against {enemy}!",
     ],
     betray: [
       "Sorry about this...",
@@ -170,6 +213,11 @@ class Peep {
       "It's just business.",
       "Can't trust anyone.",
       "Goodbye.",
+      "Sorry about this, {victim}...",
+      "Nothing personal, {victim}.",
+      "It's just business, {victim}.",
+      "Can't trust anyone, not even you {victim}.",
+      "Goodbye, {victim}.",
     ],
     taunt: [
       "Is that all you've got?",
@@ -177,6 +225,11 @@ class Peep {
       "Stay down.",
       "Too easy.",
       "Any last words?",
+      "Is that all you've got, {enemy}?",
+      "Not so tough now, {enemy}!",
+      "Stay down, {enemy}.",
+      "Too easy, {enemy}.",
+      "Any last words, {enemy}?",
     ],
     panic: [
       "NO!!!",
@@ -195,6 +248,10 @@ class Peep {
       "I'll kill you!",
       "You're mine!",
       "Time to die!",
+      "ENOUGH, {enemy}!",
+      "I'll kill you, {enemy}!",
+      "You're mine, {enemy}!",
+      "Time to die, {enemy}!",
     ],
     affirm: [
       "Right behind you!",
@@ -202,6 +259,11 @@ class Peep {
       "Let's go!",
       "Copy that!",
       "With you!",
+      "Right behind you, {ally}!",
+      "On it, {ally}!",
+      "Let's go, {ally}!",
+      "Copy that, {ally}!",
+      "With you, {ally}!",
     ],
     encourage: [
       "You've got this!",
@@ -209,6 +271,11 @@ class Peep {
       "Don't give up!",
       "We'll make it!",
       "Stay strong!",
+      "You've got this, {ally}!",
+      "Keep fighting, {ally}!",
+      "Don't give up, {ally}!",
+      "We'll make it, {ally}!",
+      "Stay strong, {ally}!",
     ],
     respond_ally: [
       "Together we're stronger!",
@@ -216,6 +283,11 @@ class Peep {
       "We've got this!",
       "Let's show them!",
       "For the alliance!",
+      "Together we're stronger, {ally}!",
+      "I'm right here, {ally}!",
+      "We've got this, {ally}!",
+      "Let's show them, {ally}!",
+      "For the alliance, {ally}!",
     ],
     respond_enemy: [
       "You talk too much.",
@@ -223,6 +295,11 @@ class Peep {
       "We'll see about that.",
       "Big talk for someone about to die.",
       "Shut up and fight.",
+      "{enemy}, you talk too much.",
+      "Come say that closer, {enemy}.",
+      "We'll see about that, {enemy}.",
+      "Big talk for someone about to die, {enemy}.",
+      "Shut up and fight, {enemy}.",
     ],
     loot_response: [
       "Nice find!",
@@ -230,8 +307,312 @@ class Peep {
       "I'm jealous!",
       "Good, we needed that!",
       "Keep it safe!",
+      "Nice find, {ally}!",
+      "Save some for me, {ally}!",
+      "I'm jealous, {ally}!",
+      "Good, we needed that, {ally}!",
+      "Keep it safe, {ally}!",
+    ],
+    gossip_kill: [
+      "Did you see {killer} take out {victim}?",
+      "{killer} just murdered {victim} out there!",
+      "Watch out for {killer}, they got {victim}!",
+      "I saw {killer} kill {victim} with my own eyes!",
+      "{victim} is dead. {killer} did it.",
+      "Word is {killer} is hunting people down.",
+    ],
+    gossip_betrayal: [
+      "Don't trust {betrayer}, they turned on {victim}.",
+      "{betrayer} backstabbed {victim}! Can you believe it?",
+      "I heard {betrayer} betrayed {victim}.",
+      "Stay away from {betrayer} — they turned on {victim}.",
+      "{victim} trusted {betrayer} and got stabbed in the back.",
+    ],
+    gossip_danger: [
+      "{target} is armed and dangerous.",
+      "Stay clear of {target}, they're hunting people.",
+      "I saw {target} with a weapon. Watch yourself.",
+      "{target} is killing anyone they see.",
+      "Don't go near {target}. Not safe.",
+    ],
+    gossip_acknowledge: [
+      "Really?",
+      "I had a feeling.",
+      "Thanks for the warning.",
+      "I'll keep an eye out.",
+      "Good to know.",
+      "That doesn't surprise me.",
+      "Figures.",
+    ],
+    gossip_liar: [
+      "Don't listen to {liar}, they lie.",
+      "{liar} is full of it.",
+      "I caught {liar} spreading false rumors.",
+      "{liar} Can't be trusted.",
+      "Everything {liar} says is a lie.",
+      "Ignore anything from {liar}.",
+      "{liar}? Known liar.",
+    ],
+    env_alone: [
+      "Where did everyone go?",
+      "Too quiet...",
+      "Is anyone else out here?",
+      "Hello?",
+      "Feels empty.",
+    ],
+    env_death_nearby: [
+      "I smell blood.",
+      "Someone died here.",
+      "This place reeks of death.",
+      "Not safe here.",
+      "Too many bodies...",
+    ],
+    env_cornucopia: [
+      "The cornucopia is deadly today.",
+      "So much fighting near the center.",
+      "That center is a war zone.",
+      "Stay away from the middle.",
+    ],
+    env_weathered: [
+      "Getting tired...",
+      "How long has it been?",
+      "My legs are giving out.",
+      "Need to rest soon.",
     ],
   };
+
+  // --- MOOD-AWARE POOLS ---
+  static MOOD_POOLS = {
+    fleeing: {
+      calm: [
+        "Better to retreat.",
+        "I'll pull back for now.",
+        "Not the right moment.",
+        "Let's regroup elsewhere.",
+      ],
+      wary: [
+        "Fall back!",
+        "Not worth it!",
+        "I'm out!",
+        "Too hot!",
+        "Getting out of here!",
+      ],
+      stressed: [
+        "Move! Move!",
+        "Get away from me!",
+        "I can't take this!",
+        "I'm leaving NOW!",
+      ],
+      panicked: [
+        "RUN!",
+        "GET AWAY!",
+        "NO NO NO!",
+        "LEAVE ME ALONE!",
+        "GO AWAY!",
+      ],
+    },
+    defend: {
+      calm: [
+        "I've got your back.",
+        "On my way.",
+        "I'll support you.",
+      ],
+      wary: [
+        "I've got your back!",
+        "I'm coming!",
+        "Hang in there!",
+        "On my way!",
+        "Don't worry!",
+      ],
+      stressed: [
+        "Hold on, I'm here!",
+        "Don't die on me!",
+        "I'm rushing to you!",
+      ],
+      panicked: [
+        "HOLD ON!",
+        "I'M COMING!",
+        "DON'T LEAVE ME!",
+      ],
+    },
+    attack: {
+      calm: [
+        "Flank them.",
+        "Get them.",
+        "Strike now.",
+      ],
+      wary: [
+        "Flank them!",
+        "Get them!",
+        "Attack now!",
+        "Move in!",
+        "Together!",
+      ],
+      stressed: [
+        "RUSH THEM!",
+        "TAKE THEM DOWN!",
+        "ATTACK!",
+      ],
+      panicked: [
+        "KILL THEM!",
+        "END IT!",
+        "NOW!",
+      ],
+    },
+    taunt: {
+      calm: [
+        "Is that all?",
+        "Not impressed.",
+        "Stay down.",
+      ],
+      wary: [
+        "Is that all you've got?",
+        "Not so tough now!",
+        "Stay down.",
+        "Too easy.",
+        "Any last words?",
+      ],
+      stressed: [
+        "PATHETIC!",
+        "WEAK!",
+        "STAY DOWN!",
+      ],
+      panicked: [
+        "DIE!",
+        "JUST DIE!",
+      ],
+    },
+    panic: {
+      calm: [
+        "No...",
+        "This is bad.",
+        "Not good.",
+      ],
+      wary: [
+        "NO!!!",
+        "Not like this!",
+        "This can't be happening!",
+        "I don't want to die!",
+      ],
+      stressed: [
+        "PLEASE NO!",
+        "SOMEONE HELP!",
+        "I CAN'T DO THIS!",
+      ],
+      panicked: [
+        "AAAAAAA!",
+        "NO NO NO NO!",
+        "HELP ME!",
+        "I DON'T WANT TO DIE!",
+      ],
+    },
+    revenge: {
+      calm: [
+        "That was unwise.",
+        "You'll regret that.",
+        "I'm coming for you.",
+      ],
+      wary: [
+        "ENOUGH!",
+        "I'll kill you!",
+        "You're mine!",
+        "Time to die!",
+      ],
+      stressed: [
+        "YOU'RE DEAD!",
+        "I'LL END YOU!",
+        "PAY FOR THAT!",
+      ],
+      panicked: [
+        "KILL!",
+        "DESTROY!",
+      ],
+    },
+    vengeance: {
+      calm: [
+        "You'll answer for that.",
+        "I won't forget this.",
+        "There will be consequences.",
+      ],
+      wary: [
+        "You'll pay for that!",
+        "That was my friend!",
+        "I'll make you regret that!",
+        "You're dead meat!",
+        "For my ally!",
+      ],
+      stressed: [
+        "I'LL KILL YOU!",
+        "FOR THEM!",
+        "PAY WITH YOUR LIFE!",
+      ],
+      panicked: [
+        "MURDERER!",
+        "DIE!",
+      ],
+    },
+  };
+
+  static getMoodPool(category, mood = "calm") {
+    const moodEntry = Peep.MOOD_POOLS[category];
+    if (!moodEntry) return Peep.DIALOGUE[category] || [];
+    const pool = moodEntry[mood] || moodEntry.calm;
+    return pool && pool.length > 0 ? pool : (Peep.DIALOGUE[category] || []);
+  }
+
+  // --- FRAGMENT BUILDER ---
+  static FRAGMENTS = {
+    prefix: {
+      calm: ["", "Listen, ", "Hey, ", "Well, ", "I guess ", "Seems like "],
+      wary: ["", "Hey, ", "Look, ", "", "Well, "],
+      stressed: ["", "Hey! ", "Come on, ", "Ugh, ", ""],
+      panicked: ["", "Hey! ", "Come on! ", "Please, ", ""],
+    },
+    subject: {
+      calm: ["they", "that one", "{target}"],
+      wary: ["{target}", "they", "that one", "them"],
+      stressed: ["{target}", "THEY", "them", "that"],
+      panicked: ["{target}", "THEM", "THAT ONE"],
+    },
+    verb: {
+      calm: [
+        "is dangerous", "should be avoided", "might be trouble",
+        "looks armed", "seems hostile", "is hunting",
+      ],
+      wary: [
+        "is dangerous", "is hunting", "looks armed",
+        "is hostile", "is a threat",
+      ],
+      stressed: [
+        "is coming", "is going to kill us", "is hunting",
+        "is armed", "is a threat",
+      ],
+      panicked: [
+        "is going to kill us", "is RIGHT THERE", "is hunting me",
+        "is coming", "is a threat",
+      ],
+    },
+    suffix: {
+      calm: [".", ", be careful.", ", okay?", "..."],
+      wary: [".", "!", ", watch out.", "..."],
+      stressed: ["!", "! Run!", "! NOW!", "..."],
+      panicked: ["!", "! RUN!", "! HELP!", "!"],
+    },
+  };
+
+  static buildFragmentLine(intent, mood, context) {
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const pre = pick(Peep.FRAGMENTS.prefix[mood] || Peep.FRAGMENTS.prefix.calm);
+    const subj = pick(Peep.FRAGMENTS.subject[mood] || Peep.FRAGMENTS.subject.calm);
+    const verb = pick(Peep.FRAGMENTS.verb[mood] || Peep.FRAGMENTS.verb.calm);
+    const suf = pick(Peep.FRAGMENTS.suffix[mood] || Peep.FRAGMENTS.suffix.calm);
+
+    let line = `${pre}${subj} ${verb}${suf}`;
+    if (context) {
+      line = line.replace(/{(\w+)}/g, (match, key) => context[key] ?? match);
+    }
+    return line.trim();
+  }
 
   applyTraits(traitNames) {
     traitNames.forEach(name => {
@@ -306,30 +687,493 @@ class Peep {
       return this.loverId === other.id;
     }
 
+    // --- MOOD & THREAD SYSTEM ---
+
+    updateMood(dt, world) {
+      const alive = world.peeps.filter(p => p.alive).length;
+      const nearest = this.findNearestEnemy(world.peeps, world, this.profile?.enemyAwareness || 200);
+      const nearestDist = nearest.target ? nearest.dist : Infinity;
+      const healthRatio = this.health / this.maxHealth;
+
+      // Stress factors accumulate into a 0-1 score
+      let stress = 0;
+      if (nearestDist < 120) stress += 0.45;
+      else if (nearestDist < 250) stress += 0.25;
+      if (healthRatio <= 0.25) stress += 0.35;
+      else if (healthRatio <= 0.5) stress += 0.2;
+      if (alive <= 3) stress += 0.2;
+      if (this.state === "attack" || this.state === "charge") stress += 0.15;
+      if (this.state === "flee" || this.state === "retreat") stress += 0.25;
+      if (this.loverMournTimer > 0) stress += 0.2;
+      if (!this.hasWeapon && nearest.target?.hasWeapon) stress += 0.1;
+
+      // Hysteresis: require sustained stress or sustained calm to flip moods
+      if (stress > 0.6) this.stressLevel = Math.min(1, this.stressLevel + dt * 1.5);
+      else if (stress < 0.25) this.stressLevel = Math.max(0, this.stressLevel - dt * 0.8);
+      else this.stressLevel = this.stressLevel * 0.95 + stress * 0.05;
+
+      const oldMood = this.dialogueMood;
+      let newMood = oldMood;
+      if (this.stressLevel > 0.75) newMood = "panicked";
+      else if (this.stressLevel > 0.45) newMood = "stressed";
+      else if (this.stressLevel > 0.2) newMood = "wary";
+      else newMood = "calm";
+
+      if (newMood === oldMood) {
+        this.moodStability += dt;
+      } else {
+        // Only flip if we've been in current mood long enough or stress jump is huge
+        if (this.moodStability > 1.2 || Math.abs(this.stressLevel - (oldMood === "panicked" ? 0.85 : oldMood === "stressed" ? 0.55 : oldMood === "wary" ? 0.3 : 0.1)) > 0.3) {
+          this.dialogueMood = newMood;
+          this.moodStability = 0;
+        }
+      }
+    }
+
+    startThread(otherId, topic, intensity = 0.3) {
+      const thread = this.activeThreads.get(otherId);
+      if (thread && thread.topic === topic) {
+        thread.intensity = Math.min(1, thread.intensity + 0.1);
+        thread.turns += 1;
+        thread.expiry = performance.now() + 8000;
+        return;
+      }
+      this.activeThreads.set(otherId, {
+        topic,
+        intensity,
+        lastSpeakerId: this.id,
+        turns: 1,
+        expiry: performance.now() + 8000,
+      });
+    }
+
+    updateThreads(dt) {
+      const now = performance.now();
+      for (const [id, thread] of this.activeThreads) {
+        if (now > thread.expiry) {
+          this.activeThreads.delete(id);
+        }
+      }
+    }
+
+    continueThread(other, world) {
+      const thread = this.activeThreads.get(other.id);
+      if (!thread || thread.lastSpeakerId === this.id) return false;
+      if (thread.turns >= 4) { this.activeThreads.delete(other.id); return false; }
+
+      thread.turns += 1;
+      thread.lastSpeakerId = this.id;
+      thread.expiry = performance.now() + 8000;
+
+      // Topic-specific back-and-forth
+      const rel = this.relationshipWith(other);
+      const isAlly = this.isAlliedWith(other, world);
+      let pool = null;
+      let ctx = {};
+
+      if (thread.topic === "defending_lover") {
+        pool = isAlly ? Peep.getMoodPool("defend", this.dialogueMood) : Peep.DIALOGUE.respond_enemy;
+        ctx = isAlly ? { ally: other.name } : { enemy: other.name };
+      } else if (thread.topic === "enemy_spotted") {
+        pool = isAlly ? Peep.getMoodPool("attack", this.dialogueMood) : Peep.DIALOGUE.respond_enemy;
+        ctx = isAlly ? { enemy: "them" } : { enemy: other.name };
+      } else if (thread.topic === "shared_fear") {
+        pool = isAlly ? Peep.getMoodPool("fleeing", this.dialogueMood) : Peep.DIALOGUE.respond_enemy;
+        ctx = isAlly ? { enemy: "them" } : { enemy: other.name };
+      } else if (thread.topic === "loot_alert") {
+        pool = Peep.DIALOGUE.loot_response;
+        ctx = { ally: other.name };
+      }
+
+      if (pool && pool.length > 0) {
+        this.shout(Peep.randomLine(pool, ctx), "social", 2.0);
+        this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
+        return true;
+      }
+      return false;
+    }
+
+    environmentalShout(world) {
+      if (this.shoutTimer > 0 || this.conversationCooldown > 0) return;
+      if (Math.random() > 0.008) return; // very low chance per tick
+
+      // Check solitude
+      const nearbyAlive = world.peeps.filter(p => p.alive && p !== this && Math.hypot(p.x - this.x, p.y - this.y) < 400);
+      if (nearbyAlive.length === 0) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.env_alone), "social", 2.5);
+        return;
+      }
+
+      // Check recent death nearby (blood splats / corpses)
+      const effects = world.hitEvents || [];
+      const nearbyDeath = effects.some(e => Math.hypot(e.x - this.x, e.y - this.y) < 200);
+      if (nearbyDeath || world.peeps.some(p => !p.alive && Math.hypot(p.x - this.x, p.y - this.y) < 150)) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.env_death_nearby), "social", 2.5);
+        return;
+      }
+
+      // Check closeness to cornucopia center
+      const distToCenter = Math.hypot(this.x - world.center.x, this.y - world.center.y);
+      if (distToCenter < 300 && nearbyAlive.length >= 3) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.env_cornucopia), "social", 2.5);
+        return;
+      }
+
+      // Fatigue (late game / long match)
+      const elapsed = (performance.now() - (world.elapsed * 1000 || 0)) / 1000;
+      if (elapsed > 90 && Math.random() < 0.3) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.env_weathered), "social", 2.5);
+        return;
+      }
+    }
+
     hearShouts(world) {
       if (this.conversationCooldown > 0 || this.shoutTimer > 0) return;
       for (const other of world.peeps) {
         if (other === this || !other.alive) continue;
-        // Only respond to shouts that started in the last 0.3s
         if (other.shoutTimer <= 0 || other.shoutTimer > other.shoutDuration - CONSTANTS.DIALOGUE.LISTEN_WINDOW) continue;
         const dist = Math.hypot(other.x - this.x, other.y - this.y);
         if (dist > CONSTANTS.DIALOGUE.MAX_DIST) continue;
+
+        // Gossips bypass normal conversation
+        if (other.shoutType === "gossip") {
+          this.processGossipShout(other, world);
+          continue;
+        }
+
+        // Try to continue an active thread first
+        if (this.activeThreads.has(other.id)) {
+          if (this.continueThread(other, world)) return;
+        }
+
         if (Math.random() > CONSTANTS.DIALOGUE.RESPONSE_CHANCE) continue;
         const isAlly = this.isAlliedWith(other, world);
         const rel = this.relationshipWith(other);
         let pool = null;
+        let topic = null;
+
         if (isAlly || rel.bond > 50) {
-          if (other.shoutType === "tactical") pool = Peep.DIALOGUE.affirm;
-          else if (other.shoutType === "loot") pool = Peep.DIALOGUE.loot_response;
-          else pool = Peep.DIALOGUE.respond_ally;
+          if (other.shoutType === "tactical") {
+            pool = Peep.getMoodPool("attack", this.dialogueMood);
+            topic = "enemy_spotted";
+          } else if (other.shoutType === "loot") {
+            pool = Peep.DIALOGUE.loot_response;
+            topic = "loot_alert";
+          } else {
+            pool = Peep.DIALOGUE.respond_ally;
+            topic = "social_banter";
+          }
         } else if (rel.anger > 40) {
           pool = Peep.DIALOGUE.respond_enemy;
+          topic = "enemy_spotted";
         } else if (Math.random() < 0.3) {
-          pool = Math.random() < 0.5 ? Peep.DIALOGUE.encourage : Peep.DIALOGUE.taunt;
+          if (Math.random() < 0.5) {
+            pool = Peep.DIALOGUE.encourage;
+            topic = "social_banter";
+          } else {
+            pool = Peep.getMoodPool("taunt", this.dialogueMood);
+            topic = "enemy_spotted";
+          }
         }
-        if (pool) {
-          this.shout(Peep.randomLine(pool), "social", 2.0);
+        if (pool && pool.length > 0) {
+          const isEnemyPool = pool === Peep.DIALOGUE.respond_enemy || pool === Peep.MOOD_POOLS?.taunt?.[this.dialogueMood];
+          const ctx = isEnemyPool ? { enemy: other.name } : { ally: other.name };
+          // Use fragment line for danger warnings, else pool line
+          let line;
+          if (topic === "enemy_spotted" && Math.random() < 0.3) {
+            line = Peep.buildFragmentLine("warn", this.dialogueMood, { target: other.name });
+          } else {
+            line = Peep.randomLine(pool, ctx);
+          }
+          this.shout(line, "social", 2.0);
+          this.startThread(other.id, topic);
           this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
+        }
+        break;
+      }
+    }
+
+    // --- GOSSIP SYSTEM ---
+
+    observeKill(killer, victim, world) {
+      if (killer === this || victim === this) return;
+      const observeRange = this.profile?.enemyAwareness || CONSTANTS.FOG.DEFAULT_AWARENESS;
+      const dist = Math.hypot(victim.x - this.x, victim.y - this.y);
+      if (dist > observeRange * CONSTANTS.GOSSIP.OBSERVE_RANGE_MULT) return;
+
+      const entry = {
+        type: "saw_kill",
+        subjectId: killer.id,
+        sourceId: this.id,
+        belief: CONSTANTS.GOSSIP.BELIEF_DIRECT,
+        verified: true,
+        timestamp: performance.now(),
+        data: { killerId: killer.id, victimId: victim.id, killerName: killer.name, victimName: victim.name },
+      };
+      this.verifyAndDetectLiars(entry, world);
+      this.addGossipMemory(entry);
+    }
+
+    observeBetrayal(betrayer, victim, world) {
+      if (betrayer === this || victim === this) return;
+      const observeRange = this.profile?.enemyAwareness || CONSTANTS.FOG.DEFAULT_AWARENESS;
+      const dist = Math.hypot(betrayer.x - this.x, betrayer.y - this.y);
+      if (dist > observeRange * CONSTANTS.GOSSIP.OBSERVE_RANGE_MULT) return;
+
+      const entry = {
+        type: "saw_betrayal",
+        subjectId: betrayer.id,
+        sourceId: this.id,
+        belief: CONSTANTS.GOSSIP.BELIEF_DIRECT,
+        verified: true,
+        timestamp: performance.now(),
+        data: { betrayerId: betrayer.id, victimId: victim.id, betrayerName: betrayer.name, victimName: victim.name },
+      };
+      this.verifyAndDetectLiars(entry, world);
+      this.addGossipMemory(entry);
+    }
+
+    verifyAndDetectLiars(verifiedEntry, world) {
+      // Scan existing gossip memories for contradictory entries about the same event
+      const contradictory = this.gossipMemories.filter(m =>
+        !m.verified &&
+        m.sourceId !== this.id &&
+        m.type === verifiedEntry.type &&
+        m.data?.victimId === verifiedEntry.data?.victimId &&
+        m.subjectId !== verifiedEntry.subjectId
+      );
+
+      for (const falseMem of contradictory) {
+        const liarId = falseMem.sourceId;
+        if (this.knownLiars.has(liarId)) continue;
+
+        const liar = world.peeps?.find(p => p.id === liarId);
+        if (!liar) continue;
+
+        // If the liar has low honesty or we already had low trust in them, blacklist permanently
+        const liarTrustworthiness = (liar.stats?.honesty ?? 5) * 10; // 10-100 scale
+        const trustInLiar = this.relationshipWith(liar)?.trust ?? 50;
+        if (liarTrustworthiness < 50 || trustInLiar < 40) {
+          this.knownLiars.add(liarId);
+          // Update existing memories from this liar — collapse their belief
+          this.gossipMemories.forEach(m => {
+            if (m.sourceId === liarId) m.belief = Math.min(m.belief, 0.05);
+          });
+          // Shout about catching the liar
+          if (this.shoutTimer <= 0) {
+            this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_liar, { liar: liar.name }), "social", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
+          }
+        }
+      }
+    }
+
+    addGossipMemory(entry) {
+      // Deduplicate by type+subject+key data
+      const dupIdx = this.gossipMemories.findIndex(m =>
+        m.type === entry.type &&
+        m.subjectId === entry.subjectId &&
+        m.data?.killerId === entry.data?.killerId &&
+        m.data?.victimId === entry.data?.victimId &&
+        m.data?.betrayerId === entry.data?.betrayerId
+      );
+      if (dupIdx !== -1) {
+        // Update belief if new entry is stronger or now verified
+        this.gossipMemories[dupIdx].belief = Math.max(this.gossipMemories[dupIdx].belief, entry.belief);
+        if (entry.verified) this.gossipMemories[dupIdx].verified = true;
+        this.gossipMemories[dupIdx].timestamp = entry.timestamp;
+        return;
+      }
+      this.gossipMemories.unshift(entry);
+      if (this.gossipMemories.length > CONSTANTS.GOSSIP.MAX_ENTRIES) {
+        this.gossipMemories.pop();
+      }
+    }
+
+    updateGossip(world) {
+      if (!this.alive || this.gossipCooldown > 0 || this.shoutTimer > 0) return;
+
+      if (Math.random() > CONSTANTS.GOSSIP.SHARE_CHANCE) return;
+      if (this.gossipMemories.length === 0) return;
+
+      const candidates = world.peeps.filter(p =>
+        p !== this && p.alive &&
+        Math.hypot(p.x - this.x, p.y - this.y) <= CONSTANTS.GOSSIP.VICINITY &&
+        (this.isAlliedWith(p, world) || this.relationshipWith(p).trust > 40)
+      );
+      if (candidates.length === 0) return;
+
+      const listener = candidates[Math.floor(Math.random() * candidates.length)];
+      const memory = this.gossipMemories[Math.floor(Math.random() * this.gossipMemories.length)];
+
+      // Don't share gossip from known liars (even if we heard it before we knew they lied)
+      if (memory.sourceId !== this.id && this.knownLiars.has(memory.sourceId)) return;
+
+      const listenerKnows = listener.gossipMemories?.some(m =>
+        m.type === memory.type &&
+        m.subjectId === memory.subjectId &&
+        m.data?.killerId === memory.data?.killerId &&
+        m.data?.victimId === memory.data?.victimId &&
+        m.belief >= memory.belief - CONSTANTS.GOSSIP.BELIEF_LOSS_PER_HOP
+      );
+      if (listenerKnows) return;
+
+      this.shareGossip(memory, listener, world);
+    }
+
+    shareGossip(memory, listener, world) {
+      // Honesty determines whether we tell the truth
+      const honesty = this.stats?.honesty ?? 5;
+      let payload = { ...memory };
+
+      // Low honesty: may swap the subject to someone we dislike
+      if (honesty < 5 && memory.type === "saw_kill" && Math.random() > honesty / 10) {
+        const enemies = world.peeps.filter(p => p.alive && p !== this && this.relationshipWith(p).anger > 50);
+        if (enemies.length > 0) {
+          const decoy = enemies[Math.floor(Math.random() * enemies.length)];
+          payload = {
+            ...payload,
+            subjectId: decoy.id,
+            data: { ...payload.data, killerId: decoy.id, killerName: decoy.name },
+          };
+        }
+      }
+      if (honesty < 5 && memory.type === "saw_betrayal" && Math.random() > honesty / 10) {
+        const enemies = world.peeps.filter(p => p.alive && p !== this && this.relationshipWith(p).anger > 50);
+        if (enemies.length > 0) {
+          const decoy = enemies[Math.floor(Math.random() * enemies.length)];
+          payload = {
+            ...payload,
+            subjectId: decoy.id,
+            data: { ...payload.data, betrayerId: decoy.id, betrayerName: decoy.name },
+          };
+        }
+      }
+      // Very low honesty: may invent a victim entirely
+      if (honesty < 3 && Math.random() < 0.15) {
+        const victims = world.peeps.filter(p => !p.alive);
+        if (victims.length > 0) {
+          const fakeVictim = victims[Math.floor(Math.random() * victims.length)];
+          const fakeKiller = world.peeps.find(p => p.alive && p !== this);
+          if (fakeKiller) {
+            payload = {
+              type: "saw_kill",
+              subjectId: fakeKiller.id,
+              sourceId: this.id,
+              belief: CONSTANTS.GOSSIP.BELIEF_DIRECT,
+              verified: false,
+              timestamp: performance.now(),
+              data: { killerId: fakeKiller.id, victimId: fakeVictim.id, killerName: fakeKiller.name, victimName: fakeVictim.name },
+            };
+          }
+        }
+      }
+
+      const transmitted = {
+        ...payload,
+        sourceId: this.id,
+        belief: Math.max(0.1, payload.belief - CONSTANTS.GOSSIP.BELIEF_LOSS_PER_HOP),
+        verified: false,
+        timestamp: performance.now(),
+      };
+      listener.receiveGossip(transmitted, this, world);
+
+      if (Math.random() < CONSTANTS.GOSSIP.DIALOGUE_CHANCE) {
+        const ctx = {};
+        if (payload.type === "saw_kill") {
+          ctx.killer = payload.data.killerName;
+          ctx.victim = payload.data.victimName;
+          this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_kill, ctx), "gossip", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
+        } else if (payload.type === "saw_betrayal") {
+          ctx.betrayer = payload.data.betrayerName;
+          ctx.victim = payload.data.victimName;
+          this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_betrayal, ctx), "gossip", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
+        } else {
+          ctx.target = world.peeps.find(p => p.id === payload.subjectId)?.name ?? "someone";
+          this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_danger, ctx), "gossip", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
+        }
+      }
+      this.gossipCooldown = CONSTANTS.GOSSIP.COOLDOWN;
+    }
+
+    receiveGossip(entry, teller, world) {
+      if (this.knownLiars.has(teller.id)) return; // Completely distrust known liars
+
+      // Reduce belief if teller has low honesty and we don't know them well
+      const tellerHonesty = teller.stats?.honesty ?? 5;
+      const trustInTeller = this.relationshipWith(teller)?.trust ?? 30;
+      if (tellerHonesty < 5 && trustInTeller < 60) {
+        entry.belief *= (tellerHonesty / 10);
+      }
+      if (entry.belief < 0.05) return; // Too unreliable to even register
+
+      this.addGossipMemory(entry);
+
+      const weight = entry.belief * (trustInTeller / 100) * CONSTANTS.GOSSIP.EMOTION_MULT;
+      const subject = world.peeps.find(p => p.id === entry.subjectId);
+      if (!subject || subject === this) return;
+
+      const rel = this.relationshipWith(subject);
+      if (entry.type === "saw_kill") {
+        rel.fear = Math.min(100, rel.fear + CONSTANTS.GOSSIP.TRUST_IMPACT_KILL * weight);
+        if (entry.data?.victimId && this.isAlliedWith(world.peeps.find(p => p.id === entry.data.victimId), world)) {
+          rel.anger = Math.min(100, rel.anger + CONSTANTS.GOSSIP.ANGER_IMPACT_BETRAYAL * weight);
+        }
+      } else if (entry.type === "saw_betrayal") {
+        rel.trust = Math.max(0, rel.trust - CONSTANTS.GOSSIP.TRUST_IMPACT_BETRAYAL * weight);
+        rel.fear = Math.min(100, rel.fear + CONSTANTS.GOSSIP.FEAR_IMPACT_KILL * weight);
+      }
+
+      if (Math.random() < CONSTANTS.GOSSIP.ACKNOWLEDGE_CHANCE && this.shoutTimer <= 0 && this.conversationCooldown <= 0) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_acknowledge), "social", 1.8);
+        this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
+      }
+    }
+
+    processGossipShout(teller, world) {
+      if (this.knownLiars.has(teller.id)) return; // Ignore everything from known liars
+      if (Math.random() > CONSTANTS.GOSSIP.ACKNOWLEDGE_CHANCE) return;
+      const trustInTeller = this.relationshipWith(teller)?.trust ?? 30;
+      if (trustInTeller < 20) return;
+
+      const tellerHonesty = teller.stats?.honesty ?? 5;
+      // Very low-honesty tellers need higher trust to be believed even at the shout level
+      if (tellerHonesty < 4 && trustInTeller < 50) return;
+
+      for (const mem of teller.gossipMemories || []) {
+        const subjectName = teller.shoutText?.includes(mem.data?.killerName) ? mem.data?.killerName :
+                           teller.shoutText?.includes(mem.data?.betrayerName) ? mem.data?.betrayerName : null;
+        if (!subjectName) continue;
+
+        const alreadyKnows = this.gossipMemories.some(m =>
+          m.type === mem.type &&
+          m.subjectId === mem.subjectId &&
+          m.data?.killerId === mem.data?.killerId &&
+          m.data?.victimId === mem.data?.victimId
+        );
+        if (alreadyKnows) continue;
+
+        const belief = CONSTANTS.GOSSIP.BELIEF_GOSSIP * (trustInTeller / 100) * (tellerHonesty / 10);
+        if (belief < 0.05) continue;
+
+        this.addGossipMemory({
+          type: mem.type,
+          subjectId: mem.subjectId,
+          sourceId: teller.id,
+          belief,
+          verified: false,
+          timestamp: performance.now(),
+          data: mem.data,
+        });
+
+        const subject = world.peeps.find(p => p.id === mem.subjectId);
+        if (subject && subject !== this) {
+          const rel = this.relationshipWith(subject);
+          const weight = belief * CONSTANTS.GOSSIP.EMOTION_MULT;
+          if (mem.type === "saw_kill") {
+            rel.fear = Math.min(100, rel.fear + CONSTANTS.GOSSIP.TRUST_IMPACT_KILL * weight);
+          } else if (mem.type === "saw_betrayal") {
+            rel.trust = Math.max(0, rel.trust - CONSTANTS.GOSSIP.TRUST_IMPACT_BETRAYAL * weight);
+          }
         }
         break;
       }
@@ -517,7 +1361,7 @@ class Peep {
     } else if (type === "killed_ally") {
       rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_KILLED_ALLY * weight);
       rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_KILLED_ALLY * weight);
-      this.shout(Peep.randomLine(Peep.DIALOGUE.vengeance), "social", 2.2);
+      this.shout(Peep.randomLine(Peep.getMoodPool("vengeance", this.dialogueMood), { killer: actor.name }), "social", 2.2);
     } else if (type === "betrayed_me") {
       rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_BETRAYED * weight);
       rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_BETRAYED * weight);
@@ -622,6 +1466,12 @@ class Peep {
     this.commandTimer = Math.max(0, this.commandTimer - dt);
     this.conversationCooldown = Math.max(0, this.conversationCooldown - dt);
     this.shoutTimer = Math.max(0, this.shoutTimer - dt);
+    this.gossipCooldown = Math.max(0, this.gossipCooldown - dt);
+
+    // Mood, thread, and environmental awareness
+    this.updateMood(dt, world);
+    this.updateThreads(dt);
+    this.environmentalShout(world);
 
     if (this.loverMournTimer > 0) {
       this.loverMournTimer -= dt;
@@ -677,6 +1527,7 @@ class Peep {
     this.considerAlliance(world);
     this.tryFallInLove(world.peeps, world, dt);
     this.hearShouts(world);
+    this.updateGossip(world);
     if (this.considerBetrayal(world)) return;
 
     // --- AI BRAIN OVERRIDE ---
@@ -712,7 +1563,7 @@ class Peep {
     } else if (this.state === "panic" && this.stateTime < 4.0) {
       this.setGoal("flee", null, world);
       if (this.stateTime < 0.1 && this.shoutTimer <= 0) {
-        this.shout("NOOOOO!!!", "social", CONSTANTS.DIALOGUE.PANIC_DURATION);
+        this.shout(Peep.randomLine(Peep.getMoodPool("panic", this.dialogueMood)), "social", CONSTANTS.DIALOGUE.PANIC_DURATION);
       }
       this.wander(dt, world);
       const blend = 1 - Math.pow(CONSTANTS.MOVEMENT.VELOCITY_BLEND_BASE, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
@@ -773,7 +1624,7 @@ class Peep {
       } else if (this.shouldFlee(threat)) {
         this.setGoal("flee", threat.target, world);
         this.setState("flee");
-        if (this.stateTime < 0.1) this.shout(Peep.randomLine(Peep.DIALOGUE.fleeing), "tactical", CONSTANTS.DIALOGUE.TACTICAL_DURATION);
+        if (this.stateTime < 0.1) this.shout(Peep.randomLine(Peep.getMoodPool("fleeing", this.dialogueMood), { enemy: threat.target.name }), "tactical", CONSTANTS.DIALOGUE.TACTICAL_DURATION);
         this.moveAwayFrom(threat.target.x, threat.target.y, this.hasWeapon ? CONSTANTS.SPEED.FLEE_ARMED : CONSTANTS.SPEED.FLEE_UNARMED, dt);
       } else {
         const baseHuntRange = this.hasWeapon
@@ -792,7 +1643,7 @@ class Peep {
 
         const weapon = !this.hasWeapon ? (this.sharedLootTarget || this.findNearestWeapon(world.groundWeapons, infiniteEyes, world)) : null;
         if (weapon && !this.hasWeapon && performance.now() - this.lastLootShoutAt > 15000) {
-            this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, weapon.type || 'weapon'), "social", CONSTANTS.DIALOGUE.SOCIAL_DURATION);
+            this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, { weapon: weapon.type || 'weapon' }), "social", CONSTANTS.DIALOGUE.SOCIAL_DURATION);
             this.sharedLootTarget = weapon;
             this.lastLootShoutAt = performance.now();
         }
@@ -813,7 +1664,7 @@ class Peep {
         } else if (loverInTrouble) {
           this.setGoal("defend", loverInTrouble, world);
           this.setState("charge");
-          if (this.stateTime < 0.1) this.shout(Peep.randomLine(Peep.DIALOGUE.defend), "tactical", CONSTANTS.DIALOGUE.DEFEND_DURATION);
+          if (this.stateTime < 0.1) this.shout(Peep.randomLine(Peep.getMoodPool("defend", this.dialogueMood), { ally: loverInTrouble.name }), "tactical", CONSTANTS.DIALOGUE.DEFEND_DURATION);
           this.moveToward(loverInTrouble.x, loverInTrouble.y, 2.75, dt);
         } else if (finalEnemy.target) {
           this.setGoal("hunt", finalEnemy.target, world);
@@ -999,7 +1850,7 @@ class Peep {
         alliance.commandTargetId = attacker.id;
         alliance.commandType = "bodyguard";
         this.commandTimer = 4.0;
-        this.shout(Peep.randomLine(Peep.DIALOGUE.defend), "tactical");
+        this.shout(Peep.randomLine(Peep.getMoodPool("defend", this.dialogueMood), { enemy: attacker.name }), "tactical");
         return;
     }
 
@@ -1010,7 +1861,7 @@ class Peep {
         alliance.commandTargetId = null;
         alliance.commandType = "fallback";
         this.commandTimer = 5.0;
-        this.shout(Peep.randomLine(Peep.DIALOGUE.fleeing), "tactical");
+        this.shout(Peep.randomLine(Peep.getMoodPool("fleeing", this.dialogueMood)), "tactical");
         return;
     }
 
@@ -1029,7 +1880,7 @@ class Peep {
             alliance.commandTargetId = target.id;
             alliance.commandType = members.length >= 3 ? "pincer" : "attack";
             this.commandTimer = 8.0; // Commands last a while
-            this.shout(Peep.randomLine(Peep.DIALOGUE.attack), "tactical");
+            this.shout(Peep.randomLine(Peep.getMoodPool("attack", this.dialogueMood), { enemy: target.name }), "tactical");
         }
     }
   }
@@ -1064,6 +1915,7 @@ class Peep {
 
     if (!best || bestScore < CONSTANTS.ALLIANCE.BETRAYAL_SCORE_MIN) return false;
     world.breakAlliance(this, best);
+    this.shout(Peep.randomLine(Peep.getMoodPool("betray", this.dialogueMood), { victim: best.name }), "social", 2.5);
     this.betrayalCooldown = randomRange(CONSTANTS.ALLIANCE.POST_BETRAYAL_COOLDOWN_MIN, CONSTANTS.ALLIANCE.POST_BETRAYAL_COOLDOWN_MAX);
     this.attackTarget = best;
     this.setState("charge");
@@ -1099,7 +1951,7 @@ class Peep {
         expiresAt: performance.now() + 6500,
       };
       this.lastLootShoutAt = performance.now();
-      this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, this.weaponLabel(nearest.type)), "loot");
+      this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, { weapon: this.weaponLabel(nearest.type) }), "loot");
     }
     return nearest;
   }
@@ -1109,6 +1961,7 @@ class Peep {
     if (type === "shotgun") return "shotgun";
     if (type === "bat") return "bat";
     if (type === "axe") return "axe";
+    if (type === "laser_eyes") return "laser eyes";
     return "weapon";
   }
 
@@ -1133,7 +1986,7 @@ class Peep {
     const rel = this.relationshipWith(threat.target);
     const angerCourage = (rel?.anger || 0) * CONSTANTS.FLEE.ANGER_COURAGE_MULT; // Increased weight
     if (this.stats.aggression + angerCourage >= CONSTANTS.FLEE.AGGRESSION_COURAGE_THRESHOLD && this.health > CONSTANTS.FLEE.HEALTH_COURAGE_THRESHOLD) {
-        if (this.state === "flee" && Math.random() < CONSTANTS.FLEE.REVENGE_SHOUT_CHANCE) this.shout(Peep.randomLine(Peep.DIALOGUE.revenge), "tactical");
+        if (this.state === "flee" && Math.random() < CONSTANTS.FLEE.REVENGE_SHOUT_CHANCE) this.shout(Peep.randomLine(Peep.getMoodPool("revenge", this.dialogueMood), { enemy: threat.target.name }), "tactical");
         return false;
     }
 
@@ -1181,30 +2034,48 @@ class Peep {
             this.laserWindUp = r.windUp ?? CONSTANTS.LASER.WIND_UP;
             this.laserAimX = this.attackTarget.x;
             this.laserAimY = this.attackTarget.y;
-            if (this.hasLaserEyes) {
-                this.setState("charge");
-            }
             return;
         } else if (this.laserPhase === "charging" && this.laserWindUp <= 0) {
             this.laserPhase = "firing";
             this.laserDuration = r.fireDuration ?? CONSTANTS.LASER.FIRE_DURATION;
 
             if (!this.hasLaserEyes && this.attackTarget?.alive) {
-                const aimAngle = Math.atan2(this.laserAimY - (this.y - 20), this.laserAimX - this.x);
+                const aimAngle = Math.atan2(this.laserAimY - this.y, this.laserAimX - this.x);
                 const barrelX = this.x + Math.cos(aimAngle) * 24;
-                const barrelY = (this.y - 20) + Math.sin(aimAngle) * 8;
+                const barrelY = this.y - 18 + Math.sin(aimAngle) * 20;
 
-                world.spawnProjectile({
-                    x: barrelX,
-                    y: barrelY,
-                    targetX: this.laserAimX,
-                    targetY: this.laserAimY,
-                    speed: this.weapon === "shotgun" ? 550 : 700,
-                    maxDistance: r.range * 1.5,
-                    damage: r.damage,
-                    weapon: this.weapon,
-                    ownerId: this.id,
-                });
+                if (this.weapon === "shotgun") {
+                    const baseAngle = Math.atan2(this.laserAimY - barrelY, this.laserAimX - barrelX);
+                    const baseDist = Math.hypot(this.laserAimX - barrelX, this.laserAimY - barrelY);
+                    const pellets = 4;
+                    for (let i = 0; i < pellets; i++) {
+                        const spread = (Math.random() - 0.5) * 0.24;
+                        const angle = baseAngle + spread;
+                        world.spawnProjectile({
+                            x: barrelX,
+                            y: barrelY,
+                            targetX: barrelX + Math.cos(angle) * baseDist,
+                            targetY: barrelY + Math.sin(angle) * baseDist,
+                            speed: 550,
+                            maxDistance: r.range * 1.5,
+                            damage: this.getDamage(),
+                            weapon: this.weapon,
+                            ownerId: this.id,
+                        });
+                    }
+                } else {
+                    world.spawnProjectile({
+                        x: barrelX,
+                        y: barrelY,
+                        targetX: this.laserAimX,
+                        targetY: this.laserAimY,
+                        speed: 700,
+                        maxDistance: r.range * 1.5,
+                        damage: this.getDamage(),
+                        weapon: this.weapon,
+                        ownerId: this.id,
+                    });
+                }
 
                 // Shell casing ejection (perpendicular, behind gun)
                 const ejectAngle = aimAngle + (this.flip > 0 ? Math.PI / 2 : -Math.PI / 2);
@@ -1310,10 +2181,9 @@ class Peep {
   }
 
   getDamage() {
-    const isMelee = !this.weapon || this.weapon === "fists" || this.weapon === "bat" || this.weapon === "axe";
-    const meleeBonus = isMelee ? Math.max(0, Math.floor((this.stats.strength - CONSTANTS.COMBAT.MELEE_STAT_THRESHOLD) / CONSTANTS.COMBAT.MELEE_STAT_DIVISOR)) : 0;
+    const strengthBonus = Math.max(0, Math.floor((this.stats.strength - CONSTANTS.COMBAT.MELEE_STAT_THRESHOLD) / CONSTANTS.COMBAT.MELEE_STAT_DIVISOR));
     const weaponConfig = WEAPON_REGISTRY[this.weapon];
-    let damage = (!weaponConfig || this.weapon === "fists") ? WEAPON_REGISTRY.fists.damage + meleeBonus : weaponConfig.damage + meleeBonus;
+    let damage = (!weaponConfig || this.weapon === "fists") ? WEAPON_REGISTRY.fists.damage + strengthBonus : weaponConfig.damage + strengthBonus;
     if (this.hasMomentum && this.state === "charge") {
       const speedBonus = Math.floor(this.speedMultiplier() * CONSTANTS.COMBAT.MOMENTUM_SPEED_MULT);
       damage += speedBonus;
@@ -1328,7 +2198,7 @@ class Peep {
     if (index >= 0) {
       const [weapon] = groundWeapons.splice(index, 1);
       this.equipWeapon(weapon.type);
-      if (this.shoutTimer <= 0) this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, this.weaponLabel(weapon.type)), "loot");
+      if (this.shoutTimer <= 0) this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, { weapon: this.weaponLabel(weapon.type) }), "loot");
     }
   }
 
@@ -1469,12 +2339,12 @@ class Peep {
       ctx.shadowBlur = 14;
       ctx.shadowColor = `rgba(255, 0, 0, ${intensity})`;
       ctx.fillStyle = `rgba(255, 60, 60, ${intensity})`;
-      ctx.beginPath(); ctx.arc(-6, -31, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -31, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(-6, -27, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(6, -27, 3, 0, Math.PI * 2); ctx.fill();
       ctx.shadowBlur = 8;
       ctx.fillStyle = `rgba(255, 200, 200, ${intensity * 0.6})`;
-      ctx.beginPath(); ctx.arc(-6, -31, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -31, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(-6, -27, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(6, -27, 5, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
 
@@ -1647,7 +2517,7 @@ class Peep {
         const targetRelY = (this.laserAimY - 20) - this.y;
         
         if (this.hasLaserEyes) {
-            const eyeY = -30;
+            const eyeY = -26;
             const eyeXOffset = 5;
             const eyes = [{ x: -eyeXOffset, y: eyeY }, { x: eyeXOffset, y: eyeY }];
             
@@ -1917,12 +2787,12 @@ class Peep {
       ctx.shadowBlur = 14;
       ctx.shadowColor = `rgba(255, 0, 0, ${intensity})`;
       ctx.fillStyle = `rgba(255, 60, 60, ${intensity})`;
-      ctx.beginPath(); ctx.arc(-6, -31, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -31, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(-6, -27, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(6, -27, 3, 0, Math.PI * 2); ctx.fill();
       ctx.shadowBlur = 8;
       ctx.fillStyle = `rgba(255, 200, 200, ${intensity * 0.6})`;
-      ctx.beginPath(); ctx.arc(-6, -31, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -31, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(-6, -27, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(6, -27, 5, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
     
@@ -1978,7 +2848,7 @@ class Peep {
         const targetRelY = (snapshot.laserAimY - 20) - snapshot.y;
         
         if (isLaserSnap) {
-            const eyeY = -30;
+            const eyeY = -26;
             const eyeXOffset = 5;
             const eyes = [{ x: -eyeXOffset, y: eyeY }, { x: eyeXOffset, y: eyeY }];
             
@@ -2150,11 +3020,12 @@ class Peep {
   }
 
   renderMugshot(sprites) {
+    if (this._cachedMugshot) return this._cachedMugshot;
     const canvas = document.createElement("canvas");
     canvas.width = CONSTANTS.PEEP.MUGSHOT_WIDTH;
     canvas.height = CONSTANTS.PEEP.MUGSHOT_HEIGHT;
     const ctx = canvas.getContext("2d");
-    
+
     ctx.save();
     ctx.translate(CONSTANTS.PEEP.MUGSHOT_WIDTH / 2, CONSTANTS.PEEP.MUGSHOT_TRANSLATE_Y);
     const scaleX = CONSTANTS.PEEP.MUGSHOT_SCALE;
@@ -2168,9 +3039,10 @@ class Peep {
     bodyAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, anchorY: 0.72 });
     if (this.isRed) redAtlas?.draw(ctx, `body_red${this.bodyFrame}`, 0, 0, { scaleX, scaleY, anchorY: 0.72 });
     faceAtlas?.draw(ctx, faceName, 0, -12 * scaleY, { scaleX, scaleY, anchorY: 0.65 });
-    
+
     ctx.restore();
-    return canvas.toDataURL();
+    this._cachedMugshot = canvas.toDataURL();
+    return this._cachedMugshot;
   }
 }
 

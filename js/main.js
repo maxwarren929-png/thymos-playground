@@ -18,6 +18,8 @@ let finalAlliancePressure = false;
 let allianceLogged = false;
 let hoverPeep = null;
 let nextAllianceId = 1;
+let currentFrameTime = performance.now();
+let apiKey = "";
 
 // === GAME SPEED ===
 const SPEED_LEVELS = [0.25, 0.5, 1, 2, 4];
@@ -367,11 +369,12 @@ const els = {
 };
 
 const weaponLabels = {
-  gun: ["a spear", "🔱"],
+  gun: ["a glock", "🔫"],
   bat: ["a club", "🏏"],
-  shotgun: ["a bow", "🏹"],
+  shotgun: ["a shotgun", "🔫"],
   axe: ["an axe", "🪓"],
   fists: ["their fists", "👊"],
+  laser_eyes: ["laser eyes", "👀"],
 };
 
 init();
@@ -389,7 +392,7 @@ async function init() {
       sprites.loadAll(),
     ]);
   } catch (error) {
-    console.warn(error);
+    if (DEBUG) console.warn(error);
   }
 
   requestAnimationFrame(loop);
@@ -495,7 +498,7 @@ function setupUi() {
         keyWarning.textContent = `AI Brain connected via ${isGithub ? 'GitHub' : 'Google'}!`;
       } else {
         const msg = data.error?.message || data.message || "";
-        console.error("Test API Fail:", data);
+        if (DEBUG) console.error("Test API Fail:", data);
         if (response.status === 404 && !isGithub) {
           testBtn.textContent = "❌ REGION?";
           keyWarning.textContent = "⚠️ Google blocks Free Tier in UK/EU. Use a VPN or try your GitHub key.";
@@ -674,7 +677,7 @@ function startGame(configs) {
   state.slowMo = { timer: 0, duration: 0, scale: 1 };
   state.processedDeaths = new Set();
   state.cursor = new CursorEntity(WORLD.center.x, WORLD.center.y);
-  state.apiKey = document.getElementById("api-key-input").value.trim();
+  apiKey = document.getElementById("api-key-input").value.trim();
   state.aiTimer = CONSTANTS.AI.BRAIN_RESET;
   state.playerPeep = null;
   state.controlMode = els.controlModeToggle?.checked || false;
@@ -933,26 +936,26 @@ function loop(now) {
   const rawDt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
   const dt = rawDt * getTimeScale();
-  if (gameState !== "playing" || !isPaused) {
-    update(dt, rawDt);
+  if (gameState === "recap" || (gameState === "playing" && !isPaused)) {
+      update(dt, rawDt, now);
   }
   render();
   requestAnimationFrame(loop);
 }
 
-function update(dt, rawDt = dt) {
+function update(dt, rawDt = dt, frameNow = performance.now()) {
   updateSlowMotion(rawDt);
   updateCameraShake(dt);
   if (gameState === "playing") {
-    recordFrame();
+    currentFrameTime = frameNow;
+    recordFrame(frameNow);
 
     // Process pending events for capture
-    const now = performance.now();
     state.pendingEvents = state.pendingEvents.filter(e => {
-      if (now >= e.triggerTime) {
+      if (frameNow >= e.triggerTime) {
         // Use pre-captured frames stored at event creation so clips match the right moment
         e.data.clip = { frames: e.clipFrames || state.rollingHistory.slice(), x: e.x, y: e.y };
-        state.allEvents.push(e.data);
+        pushAllEvent(e.data);
         return false; // Remove from pending
       }
       return true;
@@ -960,9 +963,9 @@ function update(dt, rawDt = dt) {
 
     // Process active death captures (post-recording for dynamic clips)
     state.activeCaptures = state.activeCaptures.filter(cap => {
-      if (now >= cap.triggerTime) {
+      if (frameNow >= cap.triggerTime) {
         const clip = buildDynamicClip(cap);
-        state.allEvents.push({ ...cap.data, clip });
+        pushAllEvent({ ...cap.data, clip });
         return false;
       }
       return true;
@@ -986,15 +989,15 @@ function update(dt, rawDt = dt) {
     }
 
     state.hitEvents = [];
-    const world = createWorldContext();
+    const world = createWorldContext(frameNow);
     state.peeps.forEach((peep) => peep.update(dt, world));
     if (state.playerPeep) world.resetAttack();
     updateProjectiles(dt);
     processHitEvents();
-    processDeaths();
+    processDeaths(frameNow);
     // Check if player-controlled tribute died
     if (state.playerPeep && !state.playerPeep.alive && !state.gameOverShown) {
-      showGameOver(state.playerPeep.die());
+      showGameOver(state.playerPeep._deathData || state.playerPeep.die());
     }
     updateAlliance();
     state.cursor.update(dt);
@@ -1014,7 +1017,7 @@ function update(dt, rawDt = dt) {
   updatePopulation();
 }
 
-function recordFrame() {
+function recordFrame(frameNow = performance.now()) {
   const snapshot = {
     peeps: state.peeps.map(p => p.getSnapshot()),
     groundWeapons: state.groundWeapons.map(w => ({ ...w })),
@@ -1050,7 +1053,7 @@ function recordFrame() {
       }
       return base;
     }),
-    timestamp: performance.now(),
+    timestamp: frameNow,
   };
   state.rollingHistory.push(snapshot);
   if (state.rollingHistory.length > CONSTANTS.RECAP.ROLLING_HISTORY_MAX) {
@@ -1061,59 +1064,7 @@ function recordFrame() {
     cap.postFrames.push(snapshot);
   }
 }
-
-function captureClip(x, y) {
-  // Store only the last 60 frames (1 second) per clip to avoid unbounded memory growth
-  // Full rollingHistory is 180 frames (3s), but that many frames per event is wasteful
-  const startIdx = Math.max(0, state.rollingHistory.length - CONSTANTS.RECAP.CAPTURE_FRAMES);
-  return {
-    frames: state.rollingHistory.slice(startIdx),
-    x,
-    y
-  };
-}
-
-function buildDynamicClip(cap) {
-  const frames = [...cap.preFrames, ...cap.postFrames];
-  const victimId = cap.data.victim.id;
-  const killerId = cap.data.killer?.id;
-
-  // Find the death frame: first frame where victim is no longer alive
-  let deathIdx = frames.findIndex(f => {
-    const v = f.peeps.find(p => p.id === victimId);
-    return v && !v.alive;
-  });
-  if (deathIdx === -1) deathIdx = Math.floor(frames.length * 0.75);
-
-  // Compute center and zoom from the death frame
-  const dFrame = frames[deathIdx];
-  const vSnap = dFrame.peeps.find(p => p.id === victimId);
-  const kSnap = killerId ? dFrame.peeps.find(p => p.id === killerId) : null;
-
-  let centerX, centerY, zoom;
-  if (vSnap && kSnap) {
-    centerX = (vSnap.x + kSnap.x) / 2;
-    centerY = (vSnap.y + kSnap.y) / 2;
-    const dx = Math.abs(vSnap.x - kSnap.x);
-    const dy = Math.abs(vSnap.y - kSnap.y);
-    const padding = CONSTANTS.RECAP.CLIP_PADDING; // generous padding for laser beams and weapon visuals
-    const availW = CONSTANTS.RECAP.REPLAY_CANVAS_WIDTH / CONSTANTS.RECAP.REPLAY_SCALE; // canvas width / base replay scale
-    const availH = CONSTANTS.RECAP.REPLAY_CANVAS_HEIGHT / CONSTANTS.RECAP.REPLAY_SCALE;
-    zoom = Math.max(0.15, Math.min(1.5, Math.min(availW / (dx + padding), availH / (dy + padding))));
-  } else if (vSnap) {
-    centerX = vSnap.x;
-    centerY = vSnap.y;
-    zoom = 1.0;
-  } else {
-    centerX = cap.data.victim.x;
-    centerY = cap.data.victim.y;
-    zoom = 1.0;
-  }
-
-  return { frames, x: centerX, y: centerY, zoom };
-}
-
-function createWorldContext() {
+function createWorldContext(frameNow = performance.now()) {
   return {
     ...WORLD,
     peeps: state.peeps,
@@ -1122,13 +1073,14 @@ function createWorldContext() {
     cursor: state.cursor,
     areAllied,
     getAlliance,
-    requestAlliance,
-    breakAlliance,
+    requestAlliance: (proposer, candidate) => requestAlliance(proposer, candidate, frameNow),
+    breakAlliance: (actor, target) => breakAlliance(actor, target, frameNow),
     allianceVicinity: CONSTANTS.ALLIANCE.VICINITY,
     betrayalPressure: getBetrayalPressure(),
-    elapsed: (performance.now() - gameStartTime) / 1000,
+    now: frameNow,
+    elapsed: (frameNow - gameStartTime) / 1000,
     logGoal,
-    apiKey: state.apiKey,
+    apiKey,
     keysPressed: state.keysPressed,
     aimAngle: state.playerAimAngle,
     attackQueued: state.playerAttackQueued,
@@ -1139,6 +1091,7 @@ function createWorldContext() {
       const dy = params.targetY - params.y;
       const dist = Math.hypot(dx, dy) || 1;
       const speed = params.speed || 600;
+      const owner = state.peeps.find(pe => pe.id === params.ownerId);
       state.projectiles.push({
         x: params.x,
         y: params.y,
@@ -1148,6 +1101,7 @@ function createWorldContext() {
         distanceTraveled: 0,
         maxDistance: params.maxDistance || 1000,
         ownerId: params.ownerId,
+        ownerAllianceId: owner?.allianceId ?? null,
         damage: params.damage,
         weapon: params.weapon,
         width: params.weapon === "laser_eyes" ? 3 : 1.5,
@@ -1167,11 +1121,11 @@ function createWorldContext() {
     triggerShake: (intensity = 2, duration = 0.15) => triggerCameraShake(intensity, duration),
     logEvent: (eventData) => {
         state.pendingEvents.push({
-                triggerTime: performance.now() + CONSTANTS.EVENT.TRIGGER_DELAY,
+                triggerTime: frameNow + CONSTANTS.EVENT.TRIGGER_DELAY,
             x: eventData.x,
             y: eventData.y,
             clipFrames: state.rollingHistory.slice(),
-            data: { ...eventData, day: state.currentDay }
+            data: { ...eventData, day: state.currentDay, timestamp: frameNow }
         });
     }
   };
@@ -1232,17 +1186,17 @@ function getTimeScale() {
   return state.slowMo.timer > 0 ? state.slowMo.scale * gameSpeed : gameSpeed;
 }
 
-function processDeaths() {
+function processDeaths(frameNow = performance.now()) {
   for (const peep of state.peeps) {
     if (peep.alive || state.processedDeaths.has(peep.id)) continue;
     state.processedDeaths.add(peep.id);
-    
+
     // Heartbreak Check
     if (peep.loverId) {
         const lover = state.peeps.find(p => p.id === peep.loverId && p.alive);
         if (lover) {
             state.pendingEvents.push({
-            triggerTime: performance.now() + CONSTANTS.EVENT.TRIGGER_DELAY,
+            triggerTime: frameNow + CONSTANTS.EVENT.TRIGGER_DELAY,
                 x: peep.x,
                 y: peep.y,
                 clipFrames: state.rollingHistory.slice(),
@@ -1250,36 +1204,37 @@ function processDeaths() {
                     type: "heartbreak",
                     victim: peep.name,
                     survivor: lover.name,
-    projectiles: state.projectiles.map(p => ({
-      x: p.x,
-      y: p.y,
-      vx: p.vx,
-      vy: p.vy,
-      color: p.color,
-      width: p.width,
-    })),
-    timestamp: performance.now(),
+                    projectiles: state.projectiles.map(p => ({
+                      x: p.x,
+                      y: p.y,
+                      vx: p.vx,
+                      vy: p.vy,
+                      color: p.color,
+                      width: p.width,
+                    })),
+                    timestamp: frameNow,
                     day: state.currentDay
                 }
             });
-            lover.state = "panic";
+            lover.setState("panic");
             lover.isLoverDead = true;
             lover.loverMournTimer = CONSTANTS.ROMANCE.MOURN_TIMER; // Keep shirt/hat for mourning
         }
     }
-    
+
     const data = peep.die();
+    peep._deathData = data;
 
     // Record event for recap with dynamic post-mortem capture
     state.activeCaptures.push({
-      triggerTime: performance.now() + CONSTANTS.EVENT.TRIGGER_DELAY,
+      triggerTime: frameNow + CONSTANTS.EVENT.TRIGGER_DELAY,
       preFrames: state.rollingHistory.slice(),
       postFrames: [],
       data: {
         type: "death",
         victim: data,
         killer: data.killedBy,
-        timestamp: performance.now(),
+        timestamp: frameNow,
         day: state.currentDay,
         mugshot: peep.mugshot
       }
@@ -1293,7 +1248,7 @@ function processDeaths() {
       });
     }
     addDeathEffects(data);
-    
+
     // Explosive Death logic
     if (peep.explodeOnDeath) {
         state.shockwaves.push({ x: peep.x, y: peep.y, radius: CONSTANTS.EFFECTS.SHOCKWAVE.START_RADIUS, life: CONSTANTS.EFFECTS.SHOCKWAVE.LIFE, maxLife: CONSTANTS.EFFECTS.SHOCKWAVE.LIFE });
@@ -1309,7 +1264,13 @@ function processDeaths() {
 
     recordDeathMemories(peep, data);
     removeFromAlliance(peep, "death");
+    delete state.recapTrails[peep.id]; // M7: clean up stale trails
     addKillLog(data);
+
+    // Gossip: let nearby tributes observe the kill
+    if (data.killedBy) {
+      state.peeps.forEach((p) => { if (p.alive) p.observeKill(data.killedBy, peep, state); });
+    }
   }
 }
 
@@ -1501,11 +1462,19 @@ function updateProjectiles(dt) {
     p.life -= dt;
 
     const owner = state.peeps.find((pe) => pe.id === p.ownerId);
-    const hit = alive.find((peep) => {
-      if (peep.id === p.ownerId) return false;
-      if (owner && areAllied(owner, peep)) return false;
-      return Math.hypot(peep.x - p.x, peep.y - p.y) < 18;
-    });
+    const ownerAllianceId = owner?.alive ? owner?.allianceId : p.ownerAllianceId;
+    let hit = null;
+    let hitDist = Infinity;
+    for (const peep of alive) {
+      if (!peep.alive) continue;
+      if (peep.id === p.ownerId) continue;
+      if (ownerAllianceId && peep.allianceId === ownerAllianceId) continue;
+      const dist = Math.hypot(peep.x - p.x, peep.y - p.y);
+      if (dist < 18 && dist < hitDist) {
+        hit = peep;
+        hitDist = dist;
+      }
+    }
 
     if (hit) {
       hit.takeDamage(p.damage, owner);
@@ -2006,10 +1975,16 @@ function renderZoomHint() {
 
 function pushLog(text, isCannon) {
   state.deathLog.unshift({ text, isCannon });
-  state.deathLog = state.deathLog.slice(0, CONSTANTS.UI.LOG_MAX_ENTRIES);
-  els.deathLog.innerHTML = state.deathLog
-    .map((entry) => `<div class="death-entry${entry.isCannon ? " cannon" : ""}">${entry.text}</div>`)
-    .join("");
+  if (state.deathLog.length > CONSTANTS.UI.LOG_MAX_ENTRIES) {
+    state.deathLog.pop();
+  }
+  const entry = document.createElement("div");
+  entry.className = `death-entry${isCannon ? " cannon" : ""}`;
+  entry.innerHTML = text;
+  els.deathLog.insertBefore(entry, els.deathLog.firstChild);
+  while (els.deathLog.children.length > CONSTANTS.UI.LOG_MAX_ENTRIES) {
+    els.deathLog.removeChild(els.deathLog.lastChild);
+  }
 }
 
 function logGoal(peep, goal, target = null) {
@@ -2027,137 +2002,6 @@ function logGoal(peep, goal, target = null) {
   if (!label) return;
   pushLog(`<span class="killer">${escapeHtml(peep.name)}</span> ${label}${targetText}`, false);
 }
-
-function createDistrictAlliances() {
-  const byDistrict = new Map();
-  for (const peep of state.peeps) {
-    if (!byDistrict.has(peep.district)) byDistrict.set(peep.district, []);
-    byDistrict.get(peep.district).push(peep);
-  }
-  for (const members of byDistrict.values()) {
-    if (members.length > 1) createAlliance(members, "district", CONSTANTS.ALLIANCE.START_STRENGTH_DISTRICT);
-  }
-}
-
-function createAlliance(members, type = "cross_district", strength = 55) {
-  const uniqueMembers = [...new Set(members)].filter((peep) => peep?.alive);
-  if (uniqueMembers.length < 2) return null;
-  const alliance = {
-    id: nextAllianceId,
-    members: uniqueMembers.map((peep) => peep.id),
-    type,
-    strength,
-    createdAt: performance.now(),
-  };
-  nextAllianceId += 1;
-  state.alliances.push(alliance);
-  uniqueMembers.forEach((peep) => (peep.allianceId = alliance.id));
-  return alliance;
-}
-
-function getAlliance(id) {
-  if (!id) return null;
-  return state.alliances.find((alliance) => alliance.id === id) || null;
-}
-
-function areAllied(a, b) {
-  return Boolean(a?.alive && b?.alive && a.allianceId && a.allianceId === b.allianceId && getAlliance(a.allianceId));
-}
-
-function requestAlliance(proposer, candidate) {
-  if (!proposer?.alive || !candidate?.alive || areAllied(proposer, candidate)) return false;
-  const dist = Math.hypot(candidate.x - proposer.x, candidate.y - proposer.y);
-  if (dist > CONSTANTS.ALLIANCE.VICINITY) return false;
-  const proposerRel = proposer.relationshipWith(candidate);
-  const candidateRel = candidate.relationshipWith(proposer);
-  const proposerScore = proposer.allianceDesire(candidate, proposerRel, dist);
-  const candidateScore = candidate.allianceDesire(proposer, candidateRel, dist);
-  if (proposerScore < CONSTANTS.ALLIANCE.DESIRE_THRESHOLD || candidateScore < CONSTANTS.ALLIANCE.DESIRE_THRESHOLD) return false;
-
-  const alliance = mergeOrCreateAlliance(proposer, candidate);
-  if (!alliance) return false;
-
-  // Record event for recap
-  state.allEvents.push({
-    type: "alliance",
-    proposer: { name: proposer.name, district: proposer.district },
-    candidate: { name: candidate.name, district: candidate.district },
-    timestamp: performance.now(),
-    clip: captureClip(proposer.x, proposer.y),
-  });
-
-  proposerRel.trust = Math.min(100, proposerRel.trust + 18);
-  proposerRel.bond = Math.min(100, proposerRel.bond + 12);
-  candidateRel.trust = Math.min(100, candidateRel.trust + 18);
-  candidateRel.bond = Math.min(100, candidateRel.bond + 12);
-  pushLog(`<span class="killer">${escapeHtml(proposer.name)}</span> and <span class="victim">${escapeHtml(candidate.name)}</span> formed an alliance.`, true);
-  return true;
-}
-
-function getBetrayalPressure() {
-  const alive = alivePeeps().length;
-  if (alive <= 2) return CONSTANTS.BETRAYAL_PRESSURE.ALIVE_2;
-  if (alive <= 3) return CONSTANTS.BETRAYAL_PRESSURE.ALIVE_3;
-  if (alive <= 5) return CONSTANTS.BETRAYAL_PRESSURE.ALIVE_5;
-  if (alive <= 8) return CONSTANTS.BETRAYAL_PRESSURE.ALIVE_8;
-  return 0;
-}
-
-function mergeOrCreateAlliance(a, b) {
-  if (a.allianceId && a.allianceId === b.allianceId) return getAlliance(a.allianceId);
-  removeFromAlliance(a);
-  removeFromAlliance(b);
-  return createAlliance([a, b], "cross_district", CONSTANTS.ALLIANCE.START_STRENGTH_CROSS);
-}
-
-function breakAlliance(actor, target) {
-  if (!actor?.allianceId || !target?.allianceId || actor.allianceId !== target.allianceId) return false;
-  const alliance = getAlliance(actor.allianceId);
-  if (!alliance) return false;
-
-  // Record event for recap
-  state.allEvents.push({
-    type: "betrayal",
-    actor: { name: actor.name, district: actor.district },
-    target: { name: target.name, district: target.district },
-    timestamp: performance.now(),
-    clip: captureClip(actor.x, actor.y),
-  });
-
-  actor.allianceId = null;
-  alliance.members = alliance.members.filter((id) => id !== actor.id);
-  target.remember("betrayed_me", actor, 1.4);
-  for (const peep of alivePeeps()) {
-    if (peep !== actor && peep.allianceId === alliance.id) peep.remember("betrayed_me", actor, 0.7);
-  }
-  pushLog(`<span class="killer">${escapeHtml(actor.name)}</span> betrayed <span class="victim">${escapeHtml(target.name)}</span>.`, true);
-  cleanupAlliances();
-  return true;
-}
-
-function removeFromAlliance(peep) {
-  if (!peep?.allianceId) return;
-  const alliance = getAlliance(peep.allianceId);
-  peep.allianceId = null;
-  if (!alliance) return;
-  alliance.members = alliance.members.filter((id) => id !== peep.id);
-  cleanupAlliances();
-}
-
-function cleanupAlliances() {
-  for (const alliance of state.alliances) {
-    alliance.members = alliance.members.filter((id) => {
-      const peep = state.peeps.find((item) => item.id === id);
-      return peep?.alive && peep.allianceId === alliance.id;
-    });
-    if (alliance.members.length === 1) {
-      const peep = state.peeps.find((item) => item.id === alliance.members[0]);
-      if (peep) peep.allianceId = null;
-    }
-  }
-  state.alliances = state.alliances.filter((alliance) => alliance.members.length >= 2);
-}
-
 function alivePeeps() {
   return state.peeps.filter((peep) => peep.alive);
 }
@@ -2241,199 +2085,6 @@ function roundRect(context, x, y, w, h, r) {
   context.arcTo(x, y, x + w, y, r);
   context.closePath();
 }
-
-// === ROSTER SAVE / LOAD / RANDOMIZE / BULK IMPORT ===
-
-const NAME_BANK = [
-  "Aiden", "Bryn", "Cora", "Darius", "Elara", "Finn", "Gwen", "Hector",
-  "Iris", "Jasper", "Kira", "Leo", "Mira", "Nolan", "Opal", "Pax",
-  "Quinn", "Rex", "Sage", "Talon", "Uma", "Vex", "Wren", "Xander",
-  "Yara", "Zane", "Asha", "Brutus", "Cassia", "Draven", "Ember",
-  "Frost", "Griffin", "Haven", "Ivy", "Jett", "Kael", "Luna",
-  "Milo", "Nova", "Orion", "Phoenix", "Raven", "Silas", "Thorne",
-  "Violet", "Wolf", "Zenith", "Blaze", "Cipher", "Dagger", "Echo",
-  "Fang", "Glory", "Hawk", "Ignis", "Jinx", "Kestrel", "Lyra"
-];
-
-function serializeRoster() {
-  const rows = [...els.tributeList.querySelectorAll(".tribute-row")];
-  return rows.map(row => ({
-    name: row.querySelector(".tribute-name")?.value || "",
-    district: Number(row.querySelector(".tribute-district")?.value) || 1,
-    isAI: row.querySelector(".ai-toggle-btn")?.classList.contains("active") || false,
-    traits: [...row.querySelectorAll(".trait-picker input:checked")].map(cb => cb.value),
-    stats: row.dataset.stats ? JSON.parse(row.dataset.stats) : {}
-  }));
-}
-
-function deserializeRoster(tributes) {
-  if (!Array.isArray(tributes) || tributes.length === 0) return;
-  const clamped = tributes.slice(0, CONSTANTS.TRIBUTE.COUNT_MAX);
-  setTributeCount(clamped.length, clamped);
-}
-
-function parseBulkImport(text) {
-  const lines = text.trim().split(/\n/).map(l => l.trim()).filter(Boolean);
-  const traitKeys = Object.keys(TRAIT_LIBRARY);
-
-  return lines.map((line, i) => {
-    // Extract optional district: D12 or #12 anywhere in the line
-    const districtMatch = line.match(/\b[D#](\d+)\b/);
-    const district = districtMatch ? Math.max(CONSTANTS.DISTRICT.MIN, Math.min(CONSTANTS.DISTRICT.MAX, Number(districtMatch[1]))) : (Math.floor(i / 2) + 1);
-    const lineWithoutDistrict = districtMatch ? line.replace(districtMatch[0], '') : line;
-
-    const match = lineWithoutDistrict.match(/^([^\[]+?)(?:\s*\[(.*?)\])?\s*$/);
-    const name = match ? match[1].trim() : lineWithoutDistrict.trim();
-    const traitPart = match ? match[2] : '';
-    const traits = traitPart
-      ? traitPart.split(',').map(t => t.trim().toLowerCase()).filter(t => traitKeys.includes(t))
-      : [];
-
-    return {
-      name: name || `Tribute ${i + 1}`,
-      district,
-      isAI: false,
-      traits,
-      stats: {}
-    };
-  });
-}
-
-function generateRandomRoster() {
-  const count = tributeCount;
-  const names = shuffle(NAME_BANK).slice(0, count);
-  const traitKeys = Object.keys(TRAIT_LIBRARY);
-
-  const tributes = names.map((name, i) => {
-    const numTraits = Math.floor(Math.random() * 3); // 0, 1, or 2
-    const traits = shuffle(traitKeys).slice(0, numTraits);
-
-    return {
-      name,
-      district: Math.floor(i / 2) + 1,
-      isAI: Math.random() > 0.7, // ~30% AI
-      traits,
-      stats: {}
-    };
-  });
-
-  deserializeRoster(tributes);
-}
-
-function getSavedRosters() {
-  try {
-    return JSON.parse(localStorage.getItem('hg_rosters') || '[]');
-  } catch {
-    return [];
-  }
-}
-
-function setSavedRosters(rosters) {
-  localStorage.setItem('hg_rosters', JSON.stringify(rosters));
-}
-
-function saveRosterToStorage(name) {
-  if (!name || !name.trim()) {
-    els.rosterNameInput.style.borderColor = '#ff473f';
-    setTimeout(() => els.rosterNameInput.style.borderColor = '#3a3a44', 1200);
-    return false;
-  }
-  const rosters = getSavedRosters();
-  const existingIndex = rosters.findIndex(r => r.name === name.trim());
-  const roster = { name: name.trim(), tributes: serializeRoster() };
-
-  if (existingIndex >= 0) {
-    rosters[existingIndex] = roster;
-  } else {
-    rosters.push(roster);
-  }
-  setSavedRosters(rosters);
-  return true;
-}
-
-function loadRosterFromStorage(name) {
-  const rosters = getSavedRosters();
-  const found = rosters.find(r => r.name === name);
-  if (found) {
-    deserializeRoster(found.tributes);
-    return true;
-  }
-  return false;
-}
-
-function deleteRosterFromStorage(name) {
-  let rosters = getSavedRosters();
-  rosters = rosters.filter(r => r.name !== name);
-  setSavedRosters(rosters);
-}
-
-function refreshSavedRostersList() {
-  const container = els.savedRostersList;
-  if (!container) return;
-  const rosters = getSavedRosters();
-
-  if (rosters.length === 0) {
-    container.innerHTML = '<div style="color:#666; font-size:12px; padding:8px 0;">No saved rosters yet.</div>';
-    return;
-  }
-
-  container.innerHTML = rosters.map(r => `
-    <div class="saved-roster-item">
-      <span class="saved-roster-name">${escapeHtml(r.name)}</span>
-      <span class="saved-roster-meta">${r.tributes.length} tributes</span>
-      <button class="saved-roster-load" data-name="${escapeAttr(r.name)}">Load</button>
-      <button class="saved-roster-delete" data-name="${escapeAttr(r.name)}">Delete</button>
-    </div>
-  `).join('');
-
-  container.querySelectorAll('.saved-roster-load').forEach(btn => {
-    btn.onclick = () => {
-      loadRosterFromStorage(btn.dataset.name);
-      hideRosterModal();
-    };
-  });
-
-  container.querySelectorAll('.saved-roster-delete').forEach(btn => {
-    btn.onclick = () => {
-      deleteRosterFromStorage(btn.dataset.name);
-      refreshSavedRostersList();
-    };
-  });
-}
-
-function showRosterModal(mode) {
-  const modal = els.rosterModal;
-  const title = document.getElementById('roster-modal-title') || modal.querySelector('h3');
-  const actionBtn = els.rosterModalAction;
-  const input = els.rosterNameInput;
-
-  modal.style.display = 'block';
-  els.bulkImportPanel.style.display = 'none';
-  refreshSavedRostersList();
-
-  if (mode === 'save') {
-    if (title) title.textContent = 'Save Roster';
-    actionBtn.textContent = 'Save';
-    input.style.display = 'block';
-    input.value = '';
-    input.focus();
-    actionBtn.onclick = () => {
-      if (saveRosterToStorage(input.value)) {
-        hideRosterModal();
-      }
-    };
-  } else {
-    if (title) title.textContent = 'Load Roster';
-    actionBtn.textContent = 'Close';
-    input.style.display = 'none';
-    actionBtn.onclick = hideRosterModal;
-  }
-}
-
-function hideRosterModal() {
-  els.rosterModal.style.display = 'none';
-}
-
 function shuffle(items) {
   const array = [...items];
   for (let i = array.length - 1; i > 0; i -= 1) {
@@ -2458,233 +2109,32 @@ function escapeHtml(value) {
 }
 
 function escapeAttr(value) {
-  return escapeHtml(value);
+  return String(value)
+    .replace(/[&<>'"]/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "'": "&#39;",
+      '"': "&quot;",
+    }[char]))
+    .replace(/[\s`]/g, (char) => ({
+      " ": "&#32;",
+      "\t": "&#9;",
+      "\n": "&#10;",
+      "\r": "&#13;",
+      "`": "&#96;",
+    }[char]));
 }
 
-// === RECAP LOGIC ===
-
-function showRecap() {
-  // Force process any pending events before showing recap
-  // Use pre-captured frames stored at event creation so clips match the right moment
-  state.pendingEvents.forEach(e => {
-      e.data.clip = { frames: e.clipFrames || state.rollingHistory.slice(), x: e.x, y: e.y };
-      state.allEvents.push(e.data);
-  });
-  state.pendingEvents = [];
-
-  const isEndGame = gameState === "ended";
-  state.recapIsEndGame = isEndGame;
-  gameState = "recap";
-  
-  els.victoryOverlay.style.display = "none";
-  els.recapOverlay.style.display = "flex";
-  
-  // Update header text based on context
-  const kicker = document.querySelector(".recap-kicker");
-  if (kicker) {
-    kicker.textContent = isEndGame ? "Game Complete" : `Night ${state.currentDay}`;
-  }
-
-  showFallenView();
-}
-
-function hideRecap() {
-  if (state.peeps.filter(p => p.alive).length <= 1) {
-    // If the game actually ended, go back to victory screen
-    gameState = "ended";
-    els.recapOverlay.style.display = "none";
-    els.victoryOverlay.style.display = "flex";
-  } else {
-    // Resume simulation for next day
-    gameState = "playing";
-    state.isNight = false;
-    state.dayTimer = GAME_CONSTANTS.dayLength;
-    state.currentDay += 1;
-    state.recapIsEndGame = false;
-    els.recapOverlay.style.display = "none";
+function pushAllEvent(event) {
+  state.allEvents.push(event);
+  const MAX_EVENTS = 2000;
+  if (state.allEvents.length > MAX_EVENTS) {
+    state.allEvents = state.allEvents.slice(-MAX_EVENTS);
   }
 }
-
-function showFallenView() {
-  els.recapFallenView.style.display = "block";
-  els.recapHighlightView.style.display = "none";
-  els.recapFallenList.innerHTML = "";
-
-  const isEndGame = state.recapIsEndGame;
-
-  const deaths = state.allEvents.filter((e) => {
-    if (e.type !== "death") return false;
-    if (isEndGame) return true; // Show all on game over
-    // Check if the event day matches the current day
-    return e.day === state.currentDay;
-  });
-
-  if (deaths.length === 0) {
-    els.recapFallenList.innerHTML = "<div style='color: #666; font-style: italic; margin-top: 40px;'>No one died today...</div>";
-  } else {
-    deaths.forEach((event, index) => {
-      const card = document.createElement("div");
-      card.className = "recap-fallen-card";
-      card.style.animationDelay = `${index * 0.1}s`;
-      card.innerHTML = `
-        <div class="recap-portrait">
-          ${event.mugshot ? `<img src="${event.mugshot}" style="width: 100%; height: 100%; border-radius: 50%; filter: grayscale(1);">` : "🌑"}
-        </div>
-        <div class="recap-name">${escapeHtml(event.victim.name)}</div>
-        <div class="recap-detail">District ${event.victim.district}</div>
-      `;
-      els.recapFallenList.appendChild(card);
-    });
-  }
-}
-
-function showHighlightView() {
-  state.highlights = generateHighlights();
-  state.currentHighlightIdx = 0;
-  
-  if (state.highlights.length === 0) {
-    state.highlights.push({
-      tag: "Quiet Match",
-      main: "LITTLE ACTION",
-      sub: "It was a relatively quiet match with few major incidents.",
-      desc: "The arena was eerily still."
-    });
-  }
-
-  els.recapFallenView.style.display = "none";
-  els.recapHighlightView.style.display = "flex";
-  updateHighlight();
-}
-
-function updateHighlight() {
-  state.recapTrails = {};
-  const h = state.highlights[state.currentHighlightIdx];
-  if (!h) return;
-  
-  els.recapTag.textContent = h.tag;
-  els.recapMain.textContent = h.main;
-  els.recapSub.textContent = h.sub;
-  els.recapDesc.textContent = `"${h.desc}"`;
-  els.recapCounter.textContent = `${state.currentHighlightIdx + 1} / ${state.highlights.length}`;
-
-  // Reset replay timer
-  state.replayTimer = 0;
-
-  els.recapPrevBtn.disabled = state.currentHighlightIdx === 0;
-
-  if (state.currentHighlightIdx === state.highlights.length - 1) {
-    els.recapNextBtn.style.display = "none";
-    els.recapFinishBtn.style.display = "inline-block";
-  } else {
-    els.recapNextBtn.style.display = "inline-block";
-    els.recapFinishBtn.style.display = "none";
-  }
-
-  // Trigger animation
-  els.recapHighlightView.style.animation = "none";
-  els.recapHighlightView.offsetHeight; // trigger reflow
-  els.recapHighlightView.style.animation = "recapSlideIn 0.35s ease-out";
-}
-
-function nextHighlight() {
-  if (state.currentHighlightIdx < state.highlights.length - 1) {
-    state.currentHighlightIdx++;
-    updateHighlight();
-  }
-}
-
-function prevHighlight() {
-  if (state.currentHighlightIdx > 0) {
-    state.currentHighlightIdx--;
-    updateHighlight();
-  }
-}
-
-function generateHighlights() {
-  const highlights = [];
-  const isEndGame = state.recapIsEndGame;
-  const events = isEndGame ? state.allEvents : state.allEvents.filter(e => e.day === state.currentDay);
-  
-  // 1. Bloodbath (deaths in first 10s of Day 1)
-  const bloodbathDeaths = events.filter(e => e.type === "death" && (e.timestamp - gameStartTime) < CONSTANTS.RECAP.BLOODBATH_WINDOW);
-  if (bloodbathDeaths.length >= CONSTANTS.RECAP.BLOODBATH_THRESHOLD) {
-    highlights.push({
-      tag: "Bloodbath",
-      main: "THE CORNUCOPIA",
-      sub: `${bloodbathDeaths.length} tributes were slaughtered in the opening moments of the games.`,
-      desc: "A brutal start to the competition.",
-      clip: bloodbathDeaths[0].clip
-    });
-  }
-
-  // 2. Betrayals (All)
-  const betrayals = events.filter(e => e.type === "betrayal");
-  betrayals.forEach(b => {
-    highlights.push({
-      tag: "Betrayal",
-      main: "BROKEN TRUST",
-      sub: `${b.actor.name} (D${b.actor.district}) turned on their ally ${b.target.name} (D${b.target.district}).`,
-      desc: "In the arena, friends are just enemies you haven't killed yet.",
-      clip: b.clip
-    });
-  });
-
-  // 3. Significant Alliances
-  const alliances = events.filter(e => e.type === "alliance");
-  alliances.forEach(a => {
-    highlights.push({
-      tag: "Alliance",
-      main: "STRENGTH IN NUMBERS",
-      sub: `${a.proposer.name} and ${a.candidate.name} have formed a powerful bond.`,
-      desc: "United they stand, for now.",
-      clip: a.clip
-    });
-  });
-// 4. Significant Kills
-const deathEvents = events.filter(e => e.type === "death");
-// Sort by kills to prioritize high-kill tributes, or just take a sample
-deathEvents.forEach((d, idx) => {
-  // Only show first 3 kills of the day, or all if it's the final day/endgame
-  if (idx < CONSTANTS.RECAP.HIGHLIGHT_MAX_PER_DAY || isEndGame || state.peeps.filter(p => p.alive).length <= 3) {
-      highlights.push({
-        tag: "The Kill",
-        main: "FATAL ENCOUNTER",
-        sub: `${d.victim.name} (D${d.victim.district}) fell to ${d.killer ? d.killer.name : "the arena"}.`,
-        desc: d.killer ? "Another one bites the dust." : "The arena is a dangerous place.",
-        clip: d.clip
-      });
-  }
-});
-
-// 5. Romance
-const romances = events.filter(e => e.type === "romance");
-romances.forEach(r => {
-  highlights.push({
-    tag: "Romance",
-    main: "FORBIDDEN LOVE",
-    sub: `${r.proposer} and ${r.candidate} have fallen in love.`,
-    desc: "A moment of peace in the madness.",
-    clip: r.clip
-  });
-});
-
-// 6. Heartbreak
-const heartbreaks = events.filter(e => e.type === "heartbreak");
-heartbreaks.forEach(h => {
-  highlights.push({
-    tag: "Tragedy",
-    main: "HEARTBROKEN",
-    sub: `${h.survivor} is devastated by the loss of ${h.victim}.`,
-    desc: "The cruelest part of the game.",
-    clip: h.clip
-  });
-});
-
-return highlights; // Return all significant events found
-}
-
 async function processAIBrains() {
-  if (!state.apiKey) return;
+  if (!apiKey) return;
 
   const world = createWorldContext();
   const aiTributes = state.peeps.filter(p => p.alive && p.isAI && !p.isThinking);
@@ -2713,7 +2163,7 @@ async function processAIBrains() {
       } catch (err) {
         peep.isThinking = false;
         pushLog(`<span style="color:#ff473f">🧠 AI Brain Error (${escapeHtml(peep.name)}): API call failed.</span>`, false);
-        console.error("AI Brain Error:", err);
+        if (DEBUG) console.error("AI Brain Error:", err);
       }
     }
   }

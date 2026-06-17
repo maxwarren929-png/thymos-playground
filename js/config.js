@@ -1,3 +1,5 @@
+const DEBUG = false;
+
 const GAME_CONSTANTS = {
   dayLength: 60,
   worldDimensions: { width: 3000, height: 1800 },
@@ -13,6 +15,7 @@ const STAT_REGISTRY = {
   loyalty: { min: 1, max: 10 },
   aggression: { min: 1, max: 10 },
   friendliness: { min: 1, max: 10 },
+  honesty: { min: 1, max: 10 },
 };
 
 const WEAPON_REGISTRY = {
@@ -494,6 +497,7 @@ const CONSTANTS = {
     AI_BRAIN_DURATION: 3.0,
     SOCIAL_DURATION: 2.0,
     LOOT_DURATION: 2.0,
+    GOSSIP_DURATION: 2.5,
     SHOUT_HEIGHT_OFFSET: 110,
     SHOUT_RISE: 20,
     MAX_WIDTH: 180,
@@ -505,6 +509,7 @@ const CONSTANTS = {
     TAIL_RIGHT: 0.58,
     TAIL_LENGTH: 8,
     RESPONSE_CHANCE: 0.2,
+    GOSSIP_RESPONSE_CHANCE: 0.35,
     MAX_DIST: 250,
     LISTEN_WINDOW: 0.3,
     CONVERSATION_COOLDOWN: 5.0,
@@ -514,6 +519,24 @@ const CONSTANTS = {
     LOOT_VALIDATION_DIST: 8,
     ALLY_LOOT_MULT: 1.35,
     LOOT_TARGET_TTL: 6500,
+  },
+
+  GOSSIP: {
+    VICINITY: 100,
+    COOLDOWN: 7.0,
+    SHARE_CHANCE: 0.12,
+    MAX_ENTRIES: 8,
+    BELIEF_DIRECT: 1.0,
+    BELIEF_GOSSIP: 0.65,
+    BELIEF_LOSS_PER_HOP: 0.2,
+    EMOTION_MULT: 0.5,
+    OBSERVE_RANGE_MULT: 1.8,
+    ACKNOWLEDGE_CHANCE: 0.6,
+    DIALOGUE_CHANCE: 0.7,
+    TRUST_IMPACT_KILL: 12,
+    TRUST_IMPACT_BETRAYAL: 18,
+    FEAR_IMPACT_KILL: 10,
+    ANGER_IMPACT_BETRAYAL: 15,
   },
 
   REGROUP: {
