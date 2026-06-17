@@ -4,7 +4,7 @@ class CursorEntity {
     this.y = y;
     this.targetX = x;
     this.targetY = y;
-    this.radius = 16;
+    this.radius = CONSTANTS.CURSOR.RADIUS;
     this.frameTimer = 0;
   }
 
@@ -15,15 +15,15 @@ class CursorEntity {
 
   update(dt) {
     this.frameTimer += dt;
-    const follow = 1 - Math.pow(0.65, dt * 60);
+    const follow = 1 - Math.pow(CONSTANTS.CURSOR.FOLLOW_POW, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
     this.x += (this.targetX - this.x) * follow;
     this.y += (this.targetY - this.y) * follow;
   }
 
   render(ctx, sprites) {
     const atlas = sprites.get("cursor");
-    const frame = Math.floor(this.frameTimer * 12) % 5;
-    if (atlas?.draw(ctx, `cursor${frame}`, this.x, this.y, { scale: 0.42 })) return;
+    const frame = Math.floor(this.frameTimer * CONSTANTS.CURSOR.FRAME_RATE) % CONSTANTS.CURSOR.FRAME_COUNT;
+    if (atlas?.draw(ctx, `cursor${frame}`, this.x, this.y, { scale: CONSTANTS.CURSOR.SCALE })) return;
 
     ctx.save();
     ctx.fillStyle = "rgba(255, 255, 255, 0.85)";

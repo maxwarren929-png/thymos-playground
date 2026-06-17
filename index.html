@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hunger Games Simulator</title>
 <link rel="stylesheet" href="style.css">
+
 </head>
 <body>
 
@@ -24,6 +25,61 @@
       </div>
     </div>
 
+    <div class="setup-row" style="margin-bottom: 20px;">
+      <label>Control Mode</label>
+      <label class="toggle-switch">
+        <input id="control-mode-toggle" type="checkbox">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <p style="font-size: 10px; color: #666; margin: -14px 0 18px 0;">
+      WASD to move. Mouse aims. Click to attack. Click a tribute to possess them.
+    </p>
+
+    <!-- === AI BRAIN SETTINGS === -->
+    <div id="ai-settings-panel" style="margin-bottom: 24px; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid #333;">
+      <div class="setup-row" style="margin-bottom: 8px;">
+        <label style="color: #ffd700; font-weight: bold; font-size: 12px; letter-spacing: 1px;">AI BRAIN (OPTIONAL)</label>
+      </div>
+      <div class="setup-row">
+        <label>Gemini API Key</label>
+        <div style="flex: 1; display: flex; gap: 8px; margin-left: 12px;">
+          <input id="api-key-input" type="password" placeholder="Enter key..." style="flex: 1; padding: 6px 10px; background: #16161a; border: 1px solid #333; border-radius: 4px; color: #fff; font-size: 12px;">
+          <button id="test-api-btn" style="padding: 0 10px; background: #333; border: 1px solid #444; border-radius: 4px; color: #aaa; font-size: 10px; cursor: pointer;">TEST</button>
+        </div>
+      </div>
+      <p style="font-size: 10px; color: #666; margin-top: 4px;">
+        Need a key? Get one for free at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: #ffd700; text-decoration: underline;">Google AI Studio</a>. 
+        <span id="key-warning" style="color: #ff473f; display: block; margin-top: 4px;"></span>
+      </p>
+    </div>
+
+    <!-- === ROSTER TOOLS === -->
+    <div class="roster-toolbar">
+      <button id="bulk-import-toggle" class="tool-btn" title="Bulk Import">📋 Bulk</button>
+      <button id="randomize-btn" class="tool-btn" title="Randomize All">🎲 Random</button>
+      <button id="save-roster-btn" class="tool-btn" title="Save Roster">💾 Save</button>
+      <button id="load-roster-btn" class="tool-btn" title="Load Roster">📂 Load</button>
+    </div>
+
+    <div id="bulk-import-panel" style="display:none; margin-bottom: 12px;">
+      <textarea id="bulk-input" placeholder="Name [traits] D#&#10;Katniss [sniper] D12&#10;Peeta [charismatic]&#10;Cato [bloodthirsty, tank] D2"></textarea>
+      <div class="bulk-actions">
+        <button id="bulk-parse-btn">Parse</button>
+        <button id="bulk-clear-btn">Clear</button>
+      </div>
+    </div>
+
+    <div id="roster-modal" style="display:none; margin-bottom: 12px; padding: 12px; background: #16161a; border-radius: 8px; border: 1px solid #333;">
+      <h3 id="roster-modal-title" style="font-size: 13px; color: #ffd700; margin-bottom: 10px; letter-spacing: 1px;">Save Roster</h3>
+      <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+        <input id="roster-name-input" type="text" placeholder="Roster name..." maxlength="40" style="flex:1; padding: 6px 10px; background: #2a2a30; border: 1px solid #3a3a44; border-radius: 4px; color: #fff; font-size: 13px;">
+        <button id="roster-modal-action" style="padding: 6px 14px; background: #c9a41a; border: none; border-radius: 6px; color: #16161a; font-weight: bold; font-size: 12px; cursor: pointer;">Save</button>
+        <button id="roster-modal-close" style="padding: 6px 14px; background: #2a2a30; border: 1px solid #444; border-radius: 6px; color: #aaa; font-size: 12px; cursor: pointer;">Close</button>
+      </div>
+      <div id="saved-rosters-list"></div>
+    </div>
+
     <div id="tribute-list"></div>
 
     <button id="start-btn">START THE GAMES</button>
@@ -39,6 +95,17 @@
     <div id="winner-district"></div>
     <button id="view-recap-btn">VIEW RECAP</button>
     <button id="restart-btn">PLAY AGAIN</button>
+  </div>
+</div>
+
+<!-- === GAME OVER OVERLAY === -->
+<div id="gameover-overlay" style="display:none">
+  <div id="gameover-panel">
+    <div id="gameover-skull">GAME OVER</div>
+    <div id="gameover-name"></div>
+    <div id="gameover-detail"></div>
+    <button id="possess-btn">POSSESS ANOTHER</button>
+    <button id="watch-btn">KEEP WATCHING</button>
   </div>
 </div>
 
@@ -77,18 +144,29 @@
 
 <!-- === GAME LAYOUT === -->
 <div id="game-wrapper">
-  <canvas id="game-canvas" width="960" height="540"></canvas>
-  <div id="info-panel">
-    <div id="info-title">HUNGER GAMES</div>
-    <div id="info-population">Alive: <span id="pop-count">0</span> / <span id="total-count">0</span></div>
+  <div id="canvas-container">
+    <canvas id="game-canvas" width="960" height="540"></canvas>
+    <button id="pause-btn">⏸</button>
+    <button id="speed-btn">⏵ 1x</button>
+    <button id="release-btn" style="display:none">RELEASE</button>
+    <div id="pause-overlay">PAUSED</div>
     <div id="death-log"></div>
+  </div>
+  <div id="tribute-sidebar">
+    <div id="sidebar-header">
+      <div id="info-title">HUNGER GAMES</div>
+      <div id="info-population">ALIVE: <span id="pop-count">0</span> / <span id="total-count">0</span></div>
+    </div>
+    <div id="tribute-entries"></div>
   </div>
 </div>
 
-<script src="js/sprite-loader.js"></script>
-<script src="js/config.js"></script>
-<script src="js/peep.js"></script>
-<script src="js/cursor-entity.js"></script>
-<script src="js/main.js"></script>
+<script src="js/sprite-loader.js?v=1.0.5"></script>
+<script src="js/config.js?v=1.0.5"></script>
+<script src="js/ai-controller.js?v=1.0.5"></script>
+<script src="js/peep.js?v=1.0.5"></script>
+<script src="js/cursor-entity.js?v=1.0.5"></script>
+<script src="js/main.js?v=1.0.5"></script>
+
 </body>
 </html>
