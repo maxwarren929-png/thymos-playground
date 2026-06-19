@@ -16,6 +16,8 @@ const STAT_REGISTRY = {
   aggression: { min: 1, max: 10 },
   friendliness: { min: 1, max: 10 },
   honesty: { min: 1, max: 10 },
+  cunning: { min: 1, max: 10 },
+  stamina: { min: 1, max: 10 },
 };
 
 const WEAPON_REGISTRY = {
@@ -671,5 +673,89 @@ const CONSTANTS = {
     FALLBACK_GRID_COLOR: '#1a1a24',
     FALLBACK_GRID_LINE_WIDTH: 2,
     FALLBACK_GRID_SPACING: 100,
+  },
+
+  STAMINA: {
+    MAX: 100,
+    START: 100,
+    DRAIN_CHARGE: 8,
+    DRAIN_FLEE: 7,
+    DRAIN_RUSH: 6,
+    DRAIN_PANIC: 10,
+    DRAIN_ATTACK: 4,
+    REGEN_WANDER: 4,
+    REGEN_HIDE: 7,
+    REGEN_IDLE: 5,
+    LOW_THRESHOLD: 25,
+    EXHAUSTED_THRESHOLD: 10,
+    SPEED_PENALTY_LOW: 0.7,
+    SPEED_PENALTY_EXHAUSTED: 0.45,
+  },
+
+  DANGER_ZONE: {
+    RADIUS_BASE: 140,
+    RADIUS_PER_SEVERITY: 20,
+    MAX_RADIUS: 320,
+    LIFETIME: 30,
+    DECAY_START: 18,
+    WANDER_AVOIDANCE: 0.6,
+    ENEMY_ROUTE_PENALTY: 28,
+    MAX_PER_PEEP: 8,
+  },
+
+  REVENGE: {
+    DURATION: 45,
+    COOLDOWN: 20,
+    EYESIGHT_MULT: 1.4,
+    PRIORITY_SCORE: 200,
+  },
+
+  BAIT: {
+    MIN_CUNNING: 6,
+    SCAN_RADIUS: 220,
+    LURK_OFFSET: 55,
+    ENGAGE_RANGE: 70,
+    DURATION: 12,
+    COOLDOWN: 18,
+    MIN_WEAPONS_NEARBY: 1,
+  },
+
+  COMBAT_BARK: {
+    HIT_CHANCE: 0.5,
+    KILL_CHANCE: 1.0,
+    MISS_CHANCE: 0.35,
+    COOLDOWN: 1.2,
+  },
+
+  GAME_PHASE: {
+    OPENING_SECS: 10,
+    EARLY_ALIVE_FRAC: 0.66,
+    LATE_ALIVE: 5,
+    ENDGAME_ALIVE: 3,
+  },
+
+  CASUAL_CHAT: {
+    CHANCE: 0.012,
+    ALLY_PROXIMITY: 140,
+    COOLDOWN: 16,
+    RESPONSE_CHANCE: 0.7,
+    MIN_bond: 35,
+    STRESS_MAX: 0.25,
+    DURATION: 3.0,
+  },
+
+  ALLIANCE_POSTURE: {
+    DECISION_INTERVAL: 6,
+    DEFENSIVE_OUTNUMBER_MULT: 1.3,
+    AGGRESSIVE_HUNT_MULT: 1.3,
+    FLANK_ANGLE: 2.4,
+    BAIT_MEMBER_CUNNING_MIN: 6,
+    SWAP_THRESHOLD: 4,
+  },
+
+  COLLISION: {
+    SOFT_RADIUS: 40,
+    SOFT_FORCE: 1.2,
+    SOFT_ALLY_REDUCTION: 0.5,
   },
 };

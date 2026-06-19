@@ -16,6 +16,7 @@ let lastTime = performance.now();
 let gameStartTime = 0;
 let finalAlliancePressure = false;
 let allianceLogged = false;
+let allianceBrokenLogged = false;
 let hoverPeep = null;
 let nextAllianceId = 1;
 let currentFrameTime = performance.now();
@@ -427,8 +428,8 @@ function setupUi() {
     if (configs) startGame(configs);
   });
   els.restartBtn.addEventListener("click", () => location.reload());
-  els.possessBtn.addEventListener("click", () => hideGameOver(true));
-  els.watchBtn.addEventListener("click", () => hideGameOver(false));
+  els.possessBtn.addEventListener("click", () => hideGameOver());
+  els.watchBtn.addEventListener("click", () => hideGameOver());
   els.releaseBtn.addEventListener("click", releaseControl);
 
   // Recap listeners
@@ -691,6 +692,7 @@ function startGame(configs) {
   nextAllianceId = 1;
   finalAlliancePressure = false;
   allianceLogged = false;
+  allianceBrokenLogged = false;
   hoverPeep = null;
   camera.x = WORLD.center.x;
   camera.y = WORLD.center.y;
@@ -718,6 +720,7 @@ function startGame(configs) {
     peep.initializeRelationships(state.peeps);
     peep.mugshot = peep.renderMugshot(sprites);
   });
+  state.initialPopulation = state.peeps.length;
   createDistrictAlliances();
 
   spawnWeapons();
@@ -811,17 +814,11 @@ function showGameOver(data) {
     state.selectedPeep = null;
 }
 
-function hideGameOver(shouldPossess) {
+function hideGameOver() {
     els.gameoverOverlay.style.display = "none";
     state.gameOverShown = false;
-    if (!shouldPossess) {
-        releaseControl();
-    } else {
-        // Let the player pick a new tribute from the sidebar
-        // The possess flow is triggered by clicking a sidebar entry
-        // Just drop control so they can re-click
-        releaseControl();
-    }
+    // Drop control so the player can click a sidebar entry to possess a new tribute
+    releaseControl();
 }
 
 function spawnWeapons() {
@@ -943,6 +940,36 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
+function resolveCollisions(peeps, world) {
+  const n = peeps.length;
+  if (n < 2) return;
+  const { SOFT_RADIUS, SOFT_FORCE, SOFT_ALLY_REDUCTION } = CONSTANTS.COLLISION;
+  for (let i = 0; i < n; i++) {
+    const a = peeps[i];
+    if (!a.alive || a.isFlying) continue;
+    let px = 0, py = 0;
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const b = peeps[j];
+      if (!b.alive) continue;
+      if (b.isFlying) continue;
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= SOFT_RADIUS * SOFT_RADIUS || d2 < 0.01) continue;
+      const d = Math.sqrt(d2);
+      let strength = (1 - d / SOFT_RADIUS) * SOFT_FORCE;
+      if (a.isAlliedWith(b, world)) strength *= SOFT_ALLY_REDUCTION;
+      px += (dx / d) * strength;
+      py += (dy / d) * strength;
+    }
+    if (px !== 0 || py !== 0) {
+      a.vx += px;
+      a.vy += py;
+    }
+  }
+}
+
 function update(dt, rawDt = dt, frameNow = performance.now()) {
   updateSlowMotion(rawDt);
   updateCameraShake(dt);
@@ -971,16 +998,6 @@ function update(dt, rawDt = dt, frameNow = performance.now()) {
       return true;
     });
 
-    // Day Timer Logic
-    if (!state.isNight) {
-      state.dayTimer -= rawDt;
-      if (state.dayTimer <= 0) {
-        state.dayTimer = 0;
-        state.isNight = true;
-        showRecap();
-      }
-    }
-
     // AI Brain Thinking Loop
     state.aiTimer += rawDt;
     if (state.aiTimer >= CONSTANTS.AI.BRAIN_INTERVAL) {
@@ -991,6 +1008,7 @@ function update(dt, rawDt = dt, frameNow = performance.now()) {
     state.hitEvents = [];
     const world = createWorldContext(frameNow);
     state.peeps.forEach((peep) => peep.update(dt, world));
+    resolveCollisions(state.peeps, world);
     if (state.playerPeep) world.resetAttack();
     updateProjectiles(dt);
     processHitEvents();
@@ -1004,6 +1022,16 @@ function update(dt, rawDt = dt, frameNow = performance.now()) {
     updateHover();
     checkVictory();
     updateTributeSidebar(); // Refresh sidebar for dead status
+
+    // Day Timer Logic
+    if (!state.isNight) {
+      state.dayTimer -= rawDt;
+      if (state.dayTimer <= 0) {
+        state.dayTimer = 0;
+        state.isNight = true;
+        showRecap();
+      }
+    }
   } else if (gameState === "recap") {
     // Ensure entities don't move or process AI during recap
     state.cursor.update(dt);
@@ -1079,6 +1107,7 @@ function createWorldContext(frameNow = performance.now()) {
     betrayalPressure: getBetrayalPressure(),
     now: frameNow,
     elapsed: (frameNow - gameStartTime) / 1000,
+    initialPopulation: state.initialPopulation || state.peeps.length,
     logGoal,
     apiKey,
     keysPressed: state.keysPressed,
@@ -1281,7 +1310,7 @@ function recordDeathMemories(victim, data) {
   for (const peep of alivePeeps()) {
     if (peep === killer) continue;
     if (victimAllianceId && peep.allianceId === victimAllianceId) {
-      peep.remember("killed_ally", killer, 1.2, { victimId: victim.id });
+      peep.remember("killed_ally", killer, 1.2, { victimId: victim.id, allyName: victim.name });
     }
   }
 }
@@ -1462,7 +1491,9 @@ function updateProjectiles(dt) {
     p.life -= dt;
 
     const owner = state.peeps.find((pe) => pe.id === p.ownerId);
-    const ownerAllianceId = owner?.alive ? owner?.allianceId : p.ownerAllianceId;
+    // Always use the alliance snapshot taken when the projectile was spawned,
+    // so mid-flight betrayals do not retroactively turn allies into valid targets.
+    const ownerAllianceId = p.ownerAllianceId;
     let hit = null;
     let hitDist = Infinity;
     for (const peep of alive) {
@@ -1477,9 +1508,9 @@ function updateProjectiles(dt) {
     }
 
     if (hit) {
-      hit.takeDamage(p.damage, owner);
+      const dealt = hit.takeDamage(p.damage, owner);
       if (owner && owner.lifesteal) {
-        owner.health = Math.min(owner.maxHealth, owner.health + p.damage * owner.lifesteal);
+        owner.health = Math.min(owner.maxHealth, owner.health + dealt * owner.lifesteal);
       }
       hit.remember("attacked_me", owner, 1);
       state.hitEvents.push({
@@ -1553,7 +1584,7 @@ function updateSpectatorCamera(dt) {
     const ease = 1 - Math.pow(0.01, dt);
     camera.x += (state.playerPeep.x - camera.x) * ease;
     camera.y += (state.playerPeep.y - camera.y) * ease;
-    camera.zoom = Math.min(CONSTANTS.CAMERA.PLAYER_ZOOM, camera.zoom + (CONSTANTS.CAMERA.PLAYER_ZOOM - camera.zoom) * ease * 0.5);
+    camera.zoom += (CONSTANTS.CAMERA.PLAYER_ZOOM - camera.zoom) * ease * 0.5;
     return;
   }
 
@@ -1596,6 +1627,12 @@ function updateAlliance() {
     }
     const alliance = getAlliance([...activeAllianceIds][0]);
     if (alliance) alliance.strength = Math.max(0, alliance.strength - CONSTANTS.ALLIANCE.FINAL_PRESSURE_STRENGTH_DRAIN);
+  } else if (activeAllianceIds.size === 0 && alive.length > 1) {
+    // No alliances remain and the match isn't over — every tribute for themselves.
+    if (!allianceBrokenLogged) {
+      pushLog("💔 ALLIANCE BROKEN — every tribute for themselves!", true);
+      allianceBrokenLogged = true;
+    }
   }
 }
 

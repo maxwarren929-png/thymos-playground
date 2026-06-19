@@ -113,13 +113,42 @@ class Peep {
     this.moodStability = 0; // how long current mood has held (seconds)
     this.stressLevel = 0; // 0-1 accumulated per tick
 
+    // Stamina
+    this.stamina = CONSTANTS.STAMINA.START;
+    this.maxStamina = CONSTANTS.STAMINA.MAX;
+
+    // Spatial memory: danger zones (avoidance vector source)
+    this.dangerZones = [];
+
+    // Revenge targeting
+    this.revengeTargetId = null;
+    this.revengeExpiresAt = 0;
+    this.revengeCooldown = 0;
+
+    // Bait & lure
+    this.baitPosition = null;
+    this.baitExpiresAt = 0;
+    this.baitCooldown = 0;
+
+    // Alliance posture (mirrors alliance.posture for quick access)
+    this.posture = 'defensive';
+
+    // Combat barks (state-aware)
+    this.attackPhase = 'idle';
+    this.attackDamageDealt = false;
+    this.lastCombatBarkAt = 0;
+
+    // Casual chat (alliance flavor)
+    this.casualChatCooldown = 0;
+
     // AI Brain Properties
     this.isAI = !!config.isAI;
     this.aiMemorySummary = "I have just entered the arena. I must survive.";
     this.aiGoalOverride = null; // { goal, targetId, shout, expiresAt }
     this.isThinking = false;
 
-    this.applyTraits(config.traits || []);
+    this.traits = [...(config.traits || [])];
+    this.applyTraits(this.traits);
     this.applyAbilities(config.abilities || {});
     this.profile = Peep.createProfile(this.stats);
 
@@ -378,6 +407,85 @@ class Peep {
       "How long has it been?",
       "My legs are giving out.",
       "Need to rest soon.",
+    ],
+    env_late: [
+      "How many of us are left?",
+      "Just a handful now...",
+      "I can hear every footstep.",
+      "Where did everyone go?",
+      "It's down to us.",
+    ],
+    env_endgame: [
+      "Only one walks out.",
+      "Just you and me now.",
+      "One of us isn't going home.",
+      "Come on. End it.",
+      "No more running.",
+    ],
+    revenge_named: [
+      "That was for {ally}!",
+      "{killer}! For {ally}!",
+      "This is for {ally}, {killer}!",
+      "{ally} is avenged!",
+      "You killed {ally}, {killer}. Now you pay.",
+    ],
+    betrayal_named: [
+      "I remember what you did, {betrayer}.",
+      "You turned on me, {betrayer}.",
+      "{betrayer}, you broke us.",
+      "Should never have trusted you, {betrayer}.",
+      "Your turn, {betrayer}.",
+    ],
+    attack_hit: [
+      "Got you.",
+      "There.",
+      "Stay down.",
+      "Feel that?",
+      "Too slow.",
+    ],
+    attack_kill: [
+      "Done.",
+      "Stay down.",
+      "And stay dead.",
+      "Pathetic.",
+      "That's one.",
+    ],
+    attack_miss: [
+      "Stand still!",
+      "Hold on—",
+      "Missed!",
+      "Damn.",
+      "Come here!",
+    ],
+    casual_chat: [
+      "What district you from?",
+      "You see the sunrise this morning?",
+      "I had a sister back home.",
+      "Didn't think I'd make it this far.",
+      "You hungry? I'm hungry.",
+      "This arena's bigger than it looked.",
+      "You ever think we'll get out of here?",
+      "I can't remember the last quiet minute.",
+      "What's the food like where you're from?",
+      "I keep thinking I hear cannons.",
+      "You trust the others?",
+      "Heard it gets worse at night.",
+      "Smells like rain.",
+      "My district never wins these.",
+    ],
+    casual_chat_response: [
+      "Same here, almost.",
+      "Yeah. Yeah, I get it.",
+      "Don't remind me.",
+      "Tell me about it.",
+      "Funny you should say that.",
+      "It's been a long day.",
+      "I try not to think about home.",
+      "We're still here, aren't we?",
+      "Mm.",
+      "Save your breath.",
+      "I hear you.",
+      "Take it easy. Save your strength.",
     ],
   };
 
@@ -667,7 +775,12 @@ class Peep {
         if (dist < CONSTANTS.ROMANCE.PROXIMITY_RANGE) {
           // Accumulate proximity time for both tributes
           rel.timeNear += dt;
-          if (rel.timeNear >= MIN_COURTSHIP && rel.trust > CONSTANTS.ROMANCE.MIN_TRUST && rel.bond > CONSTANTS.ROMANCE.MIN_BOND) {
+          const otherRel = other.relationshipWith(this);
+          if (rel.timeNear >= MIN_COURTSHIP
+            && rel.trust > CONSTANTS.ROMANCE.MIN_TRUST
+            && rel.bond > CONSTANTS.ROMANCE.MIN_BOND
+            && otherRel.trust > CONSTANTS.ROMANCE.MIN_TRUST
+            && otherRel.bond > CONSTANTS.ROMANCE.MIN_BOND) {
             this.loverId = other.id;
             other.loverId = this.id;
             world.logEvent({
@@ -678,6 +791,7 @@ class Peep {
                 x: this.x,
                 y: this.y
             });
+            break;
           }
         }
       }
@@ -761,12 +875,7 @@ class Peep {
       if (!thread || thread.lastSpeakerId === this.id) return false;
       if (thread.turns >= 4) { this.activeThreads.delete(other.id); return false; }
 
-      thread.turns += 1;
-      thread.lastSpeakerId = this.id;
-      thread.expiry = performance.now() + 8000;
-
       // Topic-specific back-and-forth
-      const rel = this.relationshipWith(other);
       const isAlly = this.isAlliedWith(other, world);
       let pool = null;
       let ctx = {};
@@ -783,9 +892,20 @@ class Peep {
       } else if (thread.topic === "loot_alert") {
         pool = Peep.DIALOGUE.loot_response;
         ctx = { ally: other.name };
+      } else if (thread.topic === "vengeance") {
+        pool = Peep.getMoodPool("vengeance", this.dialogueMood);
+        ctx = { killer: other.name };
+      } else if (thread.topic === "social_banter") {
+        pool = isAlly ? Peep.DIALOGUE.respond_ally : Peep.DIALOGUE.respond_enemy;
+        ctx = isAlly ? { ally: other.name } : { enemy: other.name };
       }
 
+      // Only mutate thread state if we actually produce a line — otherwise
+      // dead topics burn the turn budget and stall the conversation.
       if (pool && pool.length > 0) {
+        thread.turns += 1;
+        thread.lastSpeakerId = this.id;
+        thread.expiry = performance.now() + 8000;
         this.shout(Peep.randomLine(pool, ctx), "social", 2.0);
         this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
         return true;
@@ -796,6 +916,16 @@ class Peep {
     environmentalShout(world) {
       if (this.shoutTimer > 0 || this.conversationCooldown > 0) return;
       if (Math.random() > 0.008) return; // very low chance per tick
+
+      const phase = this.getGamePhase(world);
+      if (phase === 'endgame' && Math.random() < 0.5) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.env_endgame), "social", 2.8);
+        return;
+      }
+      if (phase === 'late' && Math.random() < 0.3) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.env_late), "social", 2.8);
+        return;
+      }
 
       // Check solitude
       const nearbyAlive = world.peeps.filter(p => p.alive && p !== this && Math.hypot(p.x - this.x, p.y - this.y) < 400);
@@ -819,12 +949,111 @@ class Peep {
         return;
       }
 
+      // Fatigue (low stamina trumps time-based)
+      if (this.stamina <= CONSTANTS.STAMINA.LOW_THRESHOLD && Math.random() < 0.3) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.env_weathered), "social", 2.5);
+        return;
+      }
+
       // Fatigue (late game / long match)
-      const elapsed = (performance.now() - (world.elapsed * 1000 || 0)) / 1000;
+      const elapsed = world.elapsed;
       if (elapsed > 90 && Math.random() < 0.3) {
         this.shout(Peep.randomLine(Peep.DIALOGUE.env_weathered), "social", 2.5);
         return;
       }
+    }
+
+    getGamePhase(world) {
+      const aliveCount = world.peeps.filter(p => p.alive).length;
+      const initial = world.initialPopulation || aliveCount || 12;
+      const elapsed = world.elapsed || 0;
+      if (elapsed < CONSTANTS.GAME_PHASE.OPENING_SECS) return 'opening';
+      if (aliveCount <= CONSTANTS.GAME_PHASE.ENDGAME_ALIVE) return 'endgame';
+      if (aliveCount <= CONSTANTS.GAME_PHASE.LATE_ALIVE) return 'late';
+      if (aliveCount <= initial * CONSTANTS.GAME_PHASE.EARLY_ALIVE_FRAC) return 'mid';
+      return 'early';
+    }
+
+    updateStamina(dt) {
+      let drain = 0;
+      let regen = 0;
+      switch (this.state) {
+        case 'charge': case 'rush_center': drain = CONSTANTS.STAMINA.DRAIN_CHARGE; break;
+        case 'flee': drain = CONSTANTS.STAMINA.DRAIN_FLEE; break;
+        case 'panic': drain = CONSTANTS.STAMINA.DRAIN_PANIC; break;
+        case 'attack': drain = CONSTANTS.STAMINA.DRAIN_ATTACK; break;
+        case 'wander': regen = CONSTANTS.STAMINA.REGEN_WANDER; break;
+        case 'hide': regen = CONSTANTS.STAMINA.REGEN_HIDE; break;
+        case 'retreat': drain = CONSTANTS.STAMINA.DRAIN_FLEE * 0.6; break;
+        default: regen = CONSTANTS.STAMINA.REGEN_IDLE; break;
+      }
+      if (drain > 0) {
+        this.stamina = Math.max(0, this.stamina - drain * dt * (1 + (10 - this.stats.stamina) * 0.04));
+        if (this.stamina <= CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD && this.state !== 'attack' && this.state !== 'panic') {
+          if (this.shoutTimer <= 0 && Math.random() < 0.01) {
+            this.shout(Peep.randomLine(Peep.DIALOGUE.env_weathered), "social", 2.0);
+          }
+        }
+      } else if (regen > 0) {
+        this.stamina = Math.min(this.maxStamina, this.stamina + regen * dt * (1 + this.stats.stamina * 0.03));
+      }
+    }
+
+    findBaitOpportunity(world) {
+      if (this.stats.cunning < CONSTANTS.BAIT.MIN_CUNNING) return null;
+      if (this.baitCooldown > 0) return null;
+      if (!this.hasWeapon) return null;
+      if (this.health <= 1) return null;
+      const scanR = CONSTANTS.BAIT.SCAN_RADIUS;
+      const weapons = (world.groundWeapons || [])
+        .map(w => ({ ...w, dist: Math.hypot(w.x - this.x, w.y - this.y) }))
+        .filter(w => w.dist <= scanR)
+        .sort((a, b) => a.dist - b.dist);
+      if (weapons.length < CONSTANTS.BAIT.MIN_WEAPONS_NEARBY) return null;
+      const weapon = weapons[0];
+      const enemiesApproaching = world.peeps.some(p =>
+        p.alive && p !== this && !this.isAlliedWith(p, world) && !p.hasWeapon &&
+        Math.hypot(p.x - weapon.x, p.y - weapon.y) < scanR * 0.7
+      );
+      if (!enemiesApproaching) return null;
+      const angle = Math.atan2(weapon.y - this.y, weapon.x - this.x);
+      return {
+        x: weapon.x - Math.cos(angle) * CONSTANTS.BAIT.LURK_OFFSET,
+        y: weapon.y - Math.sin(angle) * CONSTANTS.BAIT.LURK_OFFSET,
+        weaponX: weapon.x,
+        weaponY: weapon.y,
+        expiresAt: performance.now() + CONSTANTS.BAIT.DURATION * 1000,
+      };
+    }
+
+    considerCasualChat(world) {
+      if (this.casualChatCooldown > 0) return;
+      if (this.shoutTimer > 0 || this.conversationCooldown > 0) return;
+      if (this.stressLevel > CONSTANTS.CASUAL_CHAT.STRESS_MAX) return;
+      if (Math.random() > CONSTANTS.CASUAL_CHAT.CHANCE) return;
+      const candidate = world.peeps.find(p => {
+        if (!p.alive || p === this) return false;
+        if (!this.isAlliedWith(p, world)) return false;
+        const rel = this.relationshipWith(p);
+        if (rel.bond < CONSTANTS.CASUAL_CHAT.MIN_bond) return false;
+        const d = Math.hypot(p.x - this.x, p.y - this.y);
+        return d <= CONSTANTS.CASUAL_CHAT.ALLY_PROXIMITY && p.shoutTimer <= 0 && p.conversationCooldown <= 0;
+      });
+      if (!candidate) return;
+      const line = Peep.randomLine(Peep.DIALOGUE.casual_chat);
+      this.shout(line, "social", CONSTANTS.CASUAL_CHAT.DURATION);
+      this.casualChatCooldown = CONSTANTS.CASUAL_CHAT.COOLDOWN;
+      if (Math.random() < CONSTANTS.CASUAL_CHAT.RESPONSE_CHANCE) {
+        candidate._pendingCasualResponse = performance.now() + 600 + Math.random() * 800;
+      }
+    }
+
+    maybeCombatBark(poolName, ctx = {}) {
+      if (this.lastCombatBarkAt > 0) return;
+      if (this.shoutTimer > 0 || this.conversationCooldown > 0) return;
+      const pool = Peep.DIALOGUE[poolName] || Peep.DIALOGUE.attack_hit;
+      this.shout(Peep.randomLine(pool, ctx), "social", 1.4);
+      this.lastCombatBarkAt = CONSTANTS.COMBAT_BARK.COOLDOWN;
     }
 
     hearShouts(world) {
@@ -844,6 +1073,19 @@ class Peep {
         // Try to continue an active thread first
         if (this.activeThreads.has(other.id)) {
           if (this.continueThread(other, world)) return;
+        }
+
+        // Relationship-named retort: if `other` has wronged me (killed ally or betrayed me), retort by name
+        const _namedMem = this.memories.find(m => m.actorId === other.id && (m.type === 'killed_ally' || m.type === 'betrayed_me'));
+        if (_namedMem && Math.random() < 0.6) {
+          const _namedPool = _namedMem.type === 'killed_ally' ? Peep.DIALOGUE.revenge_named : Peep.DIALOGUE.betrayal_named;
+          const _namedCtx = _namedMem.type === 'killed_ally'
+            ? { killer: other.name, ally: _namedMem.allyName || 'my ally' }
+            : { betrayer: other.name };
+          this.shout(Peep.randomLine(_namedPool, _namedCtx), "social", 2.4);
+          this.startThread(other.id, "vengeance");
+          this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
+          break;
         }
 
         if (Math.random() > CONSTANTS.DIALOGUE.RESPONSE_CHANCE) continue;
@@ -1345,7 +1587,14 @@ class Peep {
 
   remember(type, actor, weight = 1, extra = {}) {
     if (!actor || actor === this) return;
-    const memory = { type, actorId: actor.id, time: performance.now(), weight, ...extra };
+    const memory = {
+      type,
+      actorId: actor.id,
+      actorName: actor.name,
+      time: performance.now(),
+      weight,
+      ...extra,
+    };
     this.memories.unshift(memory);
     this.memories = this.memories.slice(0, 12);
 
@@ -1355,19 +1604,92 @@ class Peep {
       rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_ATTACKED * weight);
       rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_ATTACKED * weight);
       rel.fear = Math.min(100, rel.fear + CONSTANTS.ALLIANCE.FEAR_ATTACKED * weight);
+      this.addDangerZone(this.x, this.y, 0.6 + weight * 0.4);
     } else if (type === "fought_beside_me") {
       rel.trust = Math.min(100, rel.trust + CONSTANTS.ALLIANCE.TRUST_FOUGHT * weight);
       rel.bond = Math.min(100, rel.bond + CONSTANTS.ALLIANCE.BOND_FOUGHT * weight);
     } else if (type === "killed_ally") {
       rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_KILLED_ALLY * weight);
       rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_KILLED_ALLY * weight);
+      const allyName = extra.allyName || extra.ally?.name || "my ally";
+      this.addDangerZone(this.x, this.y, 1.0 + weight * 0.4);
+      this.setRevengeTarget(actor, allyName);
       this.shout(Peep.randomLine(Peep.getMoodPool("vengeance", this.dialogueMood), { killer: actor.name }), "social", 2.2);
     } else if (type === "betrayed_me") {
       rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_BETRAYED * weight);
       rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_BETRAYED * weight);
       rel.bond = Math.max(0, rel.bond - CONSTANTS.ALLIANCE.BOND_BETRAYED * weight);
+      this.addDangerZone(this.x, this.y, 0.9 + weight * 0.3);
+      this.setRevengeTarget(actor, "our alliance");
     }
   }
+
+  addDangerZone(x, y, severity = 1) {
+    if (this.dangerZones.length >= CONSTANTS.DANGER_ZONE.MAX_PER_PEEP) {
+      this.dangerZones.shift();
+    }
+    const r = Math.min(
+      CONSTANTS.DANGER_ZONE.MAX_RADIUS,
+      CONSTANTS.DANGER_ZONE.RADIUS_BASE + severity * CONSTANTS.DANGER_ZONE.RADIUS_PER_SEVERITY
+    );
+    this.dangerZones.push({
+      x, y, r,
+      severity,
+      createdAt: performance.now(),
+      expiresAt: performance.now() + CONSTANTS.DANGER_ZONE.LIFETIME * 1000,
+    });
+  }
+
+  updateDangerZones() {
+    const now = performance.now();
+    this.dangerZones = this.dangerZones.filter(z => z.expiresAt > now);
+  }
+
+  dangerZonePenalty(x, y) {
+    const now = performance.now();
+    let pushX = 0, pushY = 0;
+    for (const z of this.dangerZones) {
+      const dx = x - z.x;
+      const dy = y - z.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const lifeFrac = Math.max(0, (z.expiresAt - now) / (CONSTANTS.DANGER_ZONE.LIFETIME * 1000));
+      if (d < z.r) {
+        const strength = (1 - d / z.r) * z.severity * lifeFrac;
+        pushX += (dx / d) * strength;
+        pushY += (dy / d) * strength;
+      }
+    }
+    return { x: pushX, y: pushY };
+  }
+
+  setRevengeTarget(actor, contextLabel) {
+    if (!actor || !actor.alive) return;
+    if (this.revengeCooldown > 0) return;
+    this.revengeTargetId = actor.id;
+    this.revengeExpiresAt = performance.now() + CONSTANTS.REVENGE.DURATION * 1000;
+    this.revengeContext = contextLabel;
+  }
+
+  acquireRevengeTarget(world) {
+    if (this.revengeCooldown > 0) return null;
+    if (!this.revengeTargetId) return null;
+    if (performance.now() > this.revengeExpiresAt) {
+      this.revengeTargetId = null;
+      this.revengeCooldown = CONSTANTS.REVENGE.COOLDOWN * 0.5;
+      return null;
+    }
+    const target = world.peeps.find(p => p.id === this.revengeTargetId);
+    if (!target || !target.alive) {
+      this.revengeTargetId = null;
+      this.revengeCooldown = CONSTANTS.REVENGE.COOLDOWN * 0.5;
+      return null;
+    }
+    const dist = Math.hypot(target.x - this.x, target.y - this.y);
+    const vision = (this.profile?.enemyAwareness || 200) * CONSTANTS.REVENGE.EYESIGHT_MULT;
+    if (dist > vision) return null;
+    return { target, dist };
+  }
+
 
   equipWeapon(type) {
     this.weapon = type;
@@ -1402,6 +1724,7 @@ class Peep {
     let nearest = null;
     let nearestDist = range;
     let nearestScore = -Infinity;
+    const now = performance.now();
     for (const peep of peeps) {
       if (!this.canHarm(peep, world)) continue;
       const dist = Math.hypot(peep.x - this.x, peep.y - this.y);
@@ -1410,7 +1733,11 @@ class Peep {
       const rel = this.relationshipWith(peep);
       const weaponThreat = peep.hasWeapon ? 18 : 0;
       const weakTarget = (peep.maxHealth - peep.health) * 7;
-      const score = 120 - detectionDist * 0.25 + rel.anger * 1.2 - rel.fear * 0.35 + weaponThreat + weakTarget + this.stats.aggression * 4;
+      const revengeBonus = (this.revengeTargetId === peep.id && now < this.revengeExpiresAt) ? CONSTANTS.REVENGE.PRIORITY_SCORE : 0;
+      const cunningOpportunism = this.stats.cunning * 3 * (peep.health < peep.maxHealth ? 1.4 : 1);
+      const danger = this.dangerZonePenalty(peep.x, peep.y);
+      const dangerPenalty = (Math.abs(danger.x) + Math.abs(danger.y)) * CONSTANTS.DANGER_ZONE.ENEMY_ROUTE_PENALTY * 0.05;
+      const score = 120 - detectionDist * 0.25 + rel.anger * 1.2 - rel.fear * 0.35 + weaponThreat + weakTarget + this.stats.aggression * 4 + revengeBonus + cunningOpportunism - dangerPenalty;
       if (score > nearestScore) {
         nearest = peep;
         nearestDist = dist;
@@ -1421,7 +1748,7 @@ class Peep {
   }
 
   takeDamage(amount, killer) {
-    if (!this.alive) return;
+    if (!this.alive) return 0;
     const reducedAmount = amount * (1 - this.damageReduction);
     const finalAmount = Math.max(0.5, reducedAmount - this.armor);
     this.health -= finalAmount;
@@ -1436,6 +1763,7 @@ class Peep {
         }
       }
     }
+    return finalAmount;
   }
 
   die() {
@@ -1467,11 +1795,37 @@ class Peep {
     this.conversationCooldown = Math.max(0, this.conversationCooldown - dt);
     this.shoutTimer = Math.max(0, this.shoutTimer - dt);
     this.gossipCooldown = Math.max(0, this.gossipCooldown - dt);
+    this.revengeCooldown = Math.max(0, this.revengeCooldown - dt);
+    this.baitCooldown = Math.max(0, this.baitCooldown - dt);
+    this.casualChatCooldown = Math.max(0, this.casualChatCooldown - dt);
+    this.lastCombatBarkAt = Math.max(0, this.lastCombatBarkAt - dt);
+
+    if (this._pendingCasualResponse && performance.now() >= this._pendingCasualResponse) {
+      this._pendingCasualResponse = 0;
+      if (this.shoutTimer <= 0 && this.conversationCooldown <= 0) {
+        this.shout(Peep.randomLine(Peep.DIALOGUE.casual_chat_response), "social", CONSTANTS.CASUAL_CHAT.DURATION);
+        this.casualChatCooldown = CONSTANTS.CASUAL_CHAT.COOLDOWN * 0.7;
+      }
+    }
+
+    this.updateStamina(dt);
+    this.updateDangerZones();
+
+    const _alliance = world.getAlliance?.(this.allianceId);
+    if (_alliance?.posture) this.posture = _alliance.posture;
+    else this.posture = 'defensive';
 
     // Mood, thread, and environmental awareness
     this.updateMood(dt, world);
     this.updateThreads(dt);
     this.environmentalShout(world);
+    this.considerCasualChat(world);
+
+    if (this.baitExpiresAt > 0 && performance.now() > this.baitExpiresAt) {
+      this.baitPosition = null;
+      this.baitExpiresAt = 0;
+      this.baitCooldown = CONSTANTS.BAIT.COOLDOWN;
+    }
 
     if (this.loverMournTimer > 0) {
       this.loverMournTimer -= dt;
@@ -1630,14 +1984,25 @@ class Peep {
         const baseHuntRange = this.hasWeapon
           ? Math.max(this.profile.huntRangeArmed, this.getAttackRange())
           : this.profile.huntRangeUnarmed;
-        const huntRange = infiniteEyes ? Infinity : baseHuntRange;
+        let huntRange = infiniteEyes ? Infinity : baseHuntRange;
+        if (this.posture === 'aggressive') huntRange *= CONSTANTS.ALLIANCE_POSTURE.AGGRESSIVE_HUNT_MULT;
+        else if (this.posture === 'defensive') huntRange *= 1 / CONSTANTS.ALLIANCE_POSTURE.AGGRESSIVE_HUNT_MULT;
 
         // Command Priority
         let finalEnemy = this.findNearestEnemy(world.peeps, world, huntRange);
+        const _revengeTarget = this.acquireRevengeTarget(world);
+        let _isRevenge = false;
+        if (_revengeTarget && this.canHarm(_revengeTarget.target, world)) {
+          if (!finalEnemy.target || _revengeTarget.dist < huntRange * 1.4) {
+            finalEnemy = { target: _revengeTarget.target, dist: _revengeTarget.dist };
+            _isRevenge = true;
+          }
+        }
         if (orderTarget && this.canHarm(orderTarget, world)) {
             const distToOrder = Math.hypot(orderTarget.x - this.x, orderTarget.y - this.y);
             if (infiniteEyes || distToOrder < huntRange * 1.5) {
                 finalEnemy = { target: orderTarget, dist: distToOrder };
+                _isRevenge = false;
             }
         }
 
@@ -1659,6 +2024,12 @@ class Peep {
           }
         }
 
+        const _baitOpp = (!finalEnemy.target && this.hasWeapon) ? this.findBaitOpportunity(world) : null;
+        if (_baitOpp && !this.baitPosition) {
+          this.baitPosition = _baitOpp;
+          this.baitExpiresAt = _baitOpp.expiresAt;
+        }
+
         if (!this.openingComplete && world.elapsed < 4.5) {
           this.executeOpeningGoal(dt, world, weapon);
         } else if (loverInTrouble) {
@@ -1669,13 +2040,54 @@ class Peep {
         } else if (finalEnemy.target) {
           this.setGoal("hunt", finalEnemy.target, world);
           this.setState("charge");
+          if (this.stateTime < 0.1 && _isRevenge && this.shoutTimer <= 0) {
+            const mem = this.memories.find(m => m.actorId === finalEnemy.target.id && (m.type === 'killed_ally' || m.type === 'betrayed_me'));
+            const ctx = mem?.type === 'killed_ally'
+              ? { killer: finalEnemy.target.name, ally: mem.allyName || 'my ally' }
+              : { betrayer: finalEnemy.target.name };
+            this.shout(Peep.randomLine(mem?.type === 'killed_ally' ? Peep.DIALOGUE.revenge_named : Peep.DIALOGUE.betrayal_named, ctx), "tactical", 2.2);
+          }
           if (finalEnemy.dist <= this.getAttackRange() && this.canStartAttack()) {
             this.attackTarget = finalEnemy.target;
             this.setState("attack");
             this.attackTime = 0;
             this.attackApplied = false;
+          } else if (this.posture === 'flanking' && this.allianceId) {
+            const allies = world.peeps.filter(p => p.alive && p.id !== this.id && p.allianceId === this.allianceId);
+            if (allies.length > 0) {
+              let nearestAlly = allies[0], nearestDist = Math.hypot(nearestAlly.x - finalEnemy.target.x, nearestAlly.y - finalEnemy.target.y);
+              for (const a of allies) {
+                const d = Math.hypot(a.x - finalEnemy.target.x, a.y - finalEnemy.target.y);
+                if (d < nearestDist) { nearestAlly = a; nearestDist = d; }
+              }
+              const aAngle = Math.atan2(finalEnemy.target.y - nearestAlly.y, finalEnemy.target.x - nearestAlly.x);
+              const flankX = finalEnemy.target.x - Math.cos(aAngle) * 60;
+              const flankY = finalEnemy.target.y - Math.sin(aAngle) * 60;
+              this.moveToward(flankX, flankY, 2.4, dt);
+            } else {
+              this.moveToward(finalEnemy.target.x, finalEnemy.target.y, 2.35, dt);
+            }
           } else {
             this.moveToward(finalEnemy.target.x, finalEnemy.target.y, 2.35, dt);
+          }
+        } else if (this.baitPosition && performance.now() < this.baitExpiresAt) {
+          this.setGoal("hide", null, world);
+          this.setState("hide");
+          const distToBait = Math.hypot(this.baitPosition.x - this.x, this.baitPosition.y - this.y);
+          if (distToBait > 20) {
+            this.moveToward(this.baitPosition.x, this.baitPosition.y, CONSTANTS.SPEED.HIDE * 1.3, dt);
+          }
+          const trapEnemy = world.peeps.find(p =>
+            p.alive && p !== this && !this.isAlliedWith(p, world) &&
+            Math.hypot(p.x - this.baitPosition.weaponX, p.y - this.baitPosition.weaponY) < CONSTANTS.BAIT.ENGAGE_RANGE
+          );
+          if (trapEnemy) {
+            this.attackTarget = trapEnemy;
+            this.setState("attack");
+            this.attackTime = 0;
+            this.attackApplied = false;
+            this.baitPosition = null;
+            this.baitExpiresAt = 0;
           }
         } else if (weapon) {
           this.setGoal("scavenge_weapon", null, world);
@@ -1746,6 +2158,7 @@ class Peep {
     if (this.profile.type === "hunter" && this.stats.aggression >= 6) return "rush_center";
     if (this.stats.speed >= 7 && this.stats.aggression <= 6) return "grab_weapon";
     if (this.profile.type === "runner" || this.stats.aggression <= 3) return "flee_center";
+    if (this.stats.cunning >= 7 && this.stats.aggression <= 7) return "skirt_center";
     if (this.stats.eyesight >= 7 && this.stats.aggression <= 5) return "skirt_center";
     return Math.random() < 0.65 ? "rush_center" : "skirt_center";
   }
@@ -1836,12 +2249,36 @@ class Peep {
     const alliance = world.getAlliance?.(this.allianceId);
     if (!alliance) return;
 
-    // Reset old commands
     if (alliance.commandTargetId) {
         const target = world.peeps.find(p => p.id === alliance.commandTargetId);
         if (!target || !target.alive) {
             alliance.commandTargetId = null;
         }
+    }
+
+    const _members = world.peeps.filter(p => p.alive && p.allianceId === this.allianceId);
+    const _enemies = world.peeps.filter(p => p.alive && !this.isAlliedWith(p, world));
+    if (_members.length > 1) {
+      let newPosture = 'defensive';
+      const hurtCount = _members.filter(p => p.health <= Math.max(1.5, p.maxHealth * 0.45)).length;
+      const outnumbered = _enemies.length >= _members.length;
+      const anyBaiter = _members.some(p => p.stats.cunning >= CONSTANTS.ALLIANCE_POSTURE.BAIT_MEMBER_CUNNING_MIN && p.hasWeapon);
+      const weaponsOnGround = (world.groundWeapons || []).length > 0;
+      if (hurtCount >= Math.ceil(_members.length / 2) || outnumbered) {
+        newPosture = 'defensive';
+      } else if (anyBaiter && weaponsOnGround && _enemies.length >= 1) {
+        newPosture = 'baiting';
+      } else if (_members.length >= 3 && _enemies.length >= 1) {
+        newPosture = 'flanking';
+      } else {
+        newPosture = 'aggressive';
+      }
+      const oldPosture = alliance.posture || 'defensive';
+      if (newPosture !== oldPosture && Math.random() < 0.4) {
+        alliance.posture = newPosture;
+      } else {
+        alliance.posture = alliance.posture || newPosture;
+      }
     }
 
     // 1. HELP! If the leader is being attacked, call everyone.
@@ -1906,7 +2343,9 @@ class Peep {
     for (const ally of allies) {
       const rel = this.relationshipWith(ally);
       const opportunity = (ally.hasWeapon && !this.hasWeapon ? CONSTANTS.ALLIANCE.BETRAYAL_WEAPON_OPPORTUNITY : 0) + (ally.health <= 2 ? CONSTANTS.ALLIANCE.BETRAYAL_HEALTH_OPPORTUNITY : 0);
-      const score = this.stats.aggression * CONSTANTS.ALLIANCE.BETRAYAL_AGGRESSION_MULT + opportunity + latePressure + world.betrayalPressure - this.stats.loyalty * CONSTANTS.ALLIANCE.BETRAYAL_LOYALTY_PENALTY_MULT - rel.bond * CONSTANTS.ALLIANCE.BETRAYAL_BOND_PENALTY_MULT - rel.trust * CONSTANTS.ALLIANCE.BETRAYAL_TRUST_PENALTY_MULT;
+      const aggressionDrive = this.stats.aggression * CONSTANTS.ALLIANCE.BETRAYAL_AGGRESSION_MULT;
+      const cunningDrive = this.stats.cunning * (CONSTANTS.ALLIANCE.BETRAYAL_AGGRESSION_MULT * 0.5) * (opportunity > 0 ? 1.3 : 0.6);
+      const score = aggressionDrive + cunningDrive + opportunity + latePressure + world.betrayalPressure - this.stats.loyalty * CONSTANTS.ALLIANCE.BETRAYAL_LOYALTY_PENALTY_MULT - rel.bond * CONSTANTS.ALLIANCE.BETRAYAL_BOND_PENALTY_MULT - rel.trust * CONSTANTS.ALLIANCE.BETRAYAL_TRUST_PENALTY_MULT;
       if (score > bestScore) {
         best = ally;
         bestScore = score;
@@ -1915,7 +2354,10 @@ class Peep {
 
     if (!best || bestScore < CONSTANTS.ALLIANCE.BETRAYAL_SCORE_MIN) return false;
     world.breakAlliance(this, best);
-    this.shout(Peep.randomLine(Peep.getMoodPool("betray", this.dialogueMood), { victim: best.name }), "social", 2.5);
+    const barkPool = this.revengeTargetId === best.id && performance.now() < this.revengeExpiresAt
+      ? Peep.DIALOGUE.betrayal_named
+      : Peep.getMoodPool("betray", this.dialogueMood);
+    this.shout(Peep.randomLine(barkPool, { victim: best.name, betrayer: best.name }), "social", 2.5);
     this.betrayalCooldown = randomRange(CONSTANTS.ALLIANCE.POST_BETRAYAL_COOLDOWN_MIN, CONSTANTS.ALLIANCE.POST_BETRAYAL_COOLDOWN_MAX);
     this.attackTarget = best;
     this.setState("charge");
@@ -1970,6 +2412,8 @@ class Peep {
     if (!threat.target) return false;
     
     let fleeRange = this.hasWeapon ? this.profile.fleeRangeArmed : this.profile.fleeRangeUnarmed;
+    if (this.posture === 'defensive') fleeRange *= CONSTANTS.ALLIANCE_POSTURE.DEFENSIVE_OUTNUMBER_MULT;
+    else if (this.posture === 'aggressive') fleeRange /= CONSTANTS.ALLIANCE_POSTURE.AGGRESSIVE_HUNT_MULT;
     
     // Hysteresis / Debouncing:
     // If already fleeing, stay in flee state until danger is 50% further away.
@@ -2111,9 +2555,18 @@ class Peep {
                     (this.attackTarget?.y || this.laserAimY) - this.laserAimY
                 );
                 if (dodgeDist < (r.dodgeDistance ?? CONSTANTS.LASER.DODGE_DISTANCE) && this.attackTarget?.alive) {
-                    this.attackTarget.takeDamage(r.damage, this);
-                    if (this.lifesteal) this.health = Math.min(this.maxHealth, this.health + r.damage * this.lifesteal);
+                    const wasAliveBefore = this.attackTarget.alive;
+                    const laserDamage = this.getDamage();
+                    const dealt = this.attackTarget.takeDamage(laserDamage, this);
+                    if (this.lifesteal) this.health = Math.min(this.maxHealth, this.health + dealt * this.lifesteal);
                     this.attackTarget.remember("attacked_me", this, 1);
+                    this.attackDamageDealt = true;
+                    const killedTarget = wasAliveBefore && !this.attackTarget.alive;
+                    if (killedTarget && Math.random() < CONSTANTS.COMBAT_BARK.KILL_CHANCE) {
+                      this.maybeCombatBark("attack_kill", { enemy: this.attackTarget.name });
+                    } else if (Math.random() < CONSTANTS.COMBAT_BARK.HIT_CHANCE) {
+                      this.maybeCombatBark("attack_hit", { enemy: this.attackTarget.name });
+                    }
                 }
             }
             return;
@@ -2130,10 +2583,15 @@ class Peep {
     }
 
     if (!this.attackApplied && this.attackTime >= CONSTANTS.COMBAT.ATTACK_APPLY_TIME) {
+      let damageLanded = false;
+      let killedTarget = false;
       if (!isRanged && dist <= this.getAttackRange() + CONSTANTS.COMBAT.ATTACK_RANGE_BUFFER) {
+        const wasAliveBefore = this.attackTarget.alive;
         const damage = this.getDamage();
-        this.attackTarget.takeDamage(damage, this);
-        if (this.lifesteal) this.health = Math.min(this.maxHealth, this.health + damage * this.lifesteal);
+        const dealt = this.attackTarget.takeDamage(damage, this);
+        damageLanded = dealt > 0;
+        killedTarget = wasAliveBefore && !this.attackTarget.alive;
+        if (this.lifesteal) this.health = Math.min(this.maxHealth, this.health + dealt * this.lifesteal);
         this.attackTarget.remember("attacked_me", this, 1);
         for (const peep of world.peeps) {
           if (peep !== this && peep !== this.attackTarget && peep.alive && world.areAllied?.(peep, this)) {
@@ -2147,21 +2605,37 @@ class Peep {
           side: this.attackTarget.bodyFrame,
           target: this.attackTarget,
           killer: this,
-          fatal: !this.attackTarget.alive,
+          fatal: killedTarget,
         });
       }
       this.attackApplied = true;
+      if (damageLanded) {
+        this.attackDamageDealt = true;
+        if (killedTarget && Math.random() < CONSTANTS.COMBAT_BARK.KILL_CHANCE) {
+          this.maybeCombatBark("attack_kill", { enemy: this.attackTarget.name });
+        } else if (Math.random() < CONSTANTS.COMBAT_BARK.HIT_CHANCE) {
+          this.maybeCombatBark("attack_hit", { enemy: this.attackTarget.name });
+        }
+      }
       // Super Speed: hit-and-run — zoom away immediately after attacking
       if (this.hasSuperSpeed) {
         this.setState("flee");
       }
     }
-    if (!this.hasSuperSpeed && this.attackTime >= CONSTANTS.COMBAT.ATTACK_MAX_TIME) this.setState("charge");
+    if (!this.hasSuperSpeed && this.attackTime >= CONSTANTS.COMBAT.ATTACK_MAX_TIME) {
+      if (!this.attackDamageDealt && Math.random() < CONSTANTS.COMBAT_BARK.MISS_CHANCE && this.attackTarget?.alive) {
+        this.maybeCombatBark("attack_miss", { enemy: this.attackTarget.name });
+      }
+      this.setState("charge");
+    }
     this.animate(0.5, dt);
   }
 
   setState(state) {
     if (this.state === state) return;
+    if (state === 'attack') {
+      this.attackDamageDealt = false;
+    }
     // If leaving attack with a non-laser ranged weapon, reset phase so it never strands mid-cycle
     if (this.state === "attack" && !this.hasLaserEyes) {
       const w = WEAPON_REGISTRY[this.weapon];
@@ -2223,7 +2697,12 @@ class Peep {
         this.wanderAngle += -1.1 + Math.random() * 2.2;
       }
     }
-    this.applyVelocity(Math.cos(this.wanderAngle) * CONSTANTS.SPEED.WANDER * this.speedMultiplier(), Math.sin(this.wanderAngle) * CONSTANTS.SPEED.WANDER * this.speedMultiplier(), dt);
+    let vx = Math.cos(this.wanderAngle) * CONSTANTS.SPEED.WANDER * this.speedMultiplier();
+    let vy = Math.sin(this.wanderAngle) * CONSTANTS.SPEED.WANDER * this.speedMultiplier();
+    const _danger = this.dangerZonePenalty(this.x, this.y);
+    vx += _danger.x * CONSTANTS.DANGER_ZONE.WANDER_AVOIDANCE * 1.5;
+    vy += _danger.y * CONSTANTS.DANGER_ZONE.WANDER_AVOIDANCE * 1.5;
+    this.applyVelocity(vx, vy, dt);
   }
 
   moveToward(x, y, speed, dt) {
@@ -2248,7 +2727,14 @@ class Peep {
     const base = CONSTANTS.MOVEMENT.BASE_MULTIPLIER + this.stats.speed * CONSTANTS.MOVEMENT.STAT_COEFFICIENT;
     let mult = this.isFlying ? base * CONSTANTS.MOVEMENT.FLYING_BONUS : base;
     if (this.hasSuperSpeed && CONSTANTS.MOVEMENT.SUPER_SPEED_STATES.includes(this.state)) mult *= CONSTANTS.MOVEMENT.SUPER_SPEED_MULT;
-    return mult * this.speedDebuff;
+    mult *= this.speedDebuff;
+    if (this.stamina <= CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD) {
+      mult *= CONSTANTS.STAMINA.SPEED_PENALTY_EXHAUSTED;
+    } else if (this.stamina <= CONSTANTS.STAMINA.LOW_THRESHOLD) {
+      const t = (this.stamina - CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD) / (CONSTANTS.STAMINA.LOW_THRESHOLD - CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD);
+      mult *= CONSTANTS.STAMINA.SPEED_PENALTY_LOW + (1 - CONSTANTS.STAMINA.SPEED_PENALTY_LOW) * t;
+    }
+    return mult;
   }
 
   applyVelocity(vx, vy, dt) {

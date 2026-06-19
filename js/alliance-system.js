@@ -75,6 +75,29 @@ function getBetrayalPressure() {
 
 function mergeOrCreateAlliance(a, b, frameNow = performance.now()) {
   if (a.allianceId && a.allianceId === b.allianceId) return getAlliance(a.allianceId);
+
+  // Prefer merging into an existing multi-member alliance rather than dissolving it,
+  // which would orphan the proposer's existing allies (e.g. district partner).
+  const allianceA = a.allianceId ? getAlliance(a.allianceId) : null;
+  const allianceB = b.allianceId ? getAlliance(b.allianceId) : null;
+
+  if (allianceA && allianceA.members.length >= 2) {
+    removeFromAlliance(b);
+    // removeFromAlliance may have triggered cleanupAlliances, so re-fetch to be safe.
+    const target = getAlliance(allianceA.id) || allianceA;
+    if (!target.members.includes(b.id)) target.members.push(b.id);
+    b.allianceId = target.id;
+    return target;
+  }
+  if (allianceB && allianceB.members.length >= 2) {
+    removeFromAlliance(a);
+    const target = getAlliance(allianceB.id) || allianceB;
+    if (!target.members.includes(a.id)) target.members.push(a.id);
+    a.allianceId = target.id;
+    return target;
+  }
+
+  // Neither side has a real alliance left — build a fresh 2-pack.
   removeFromAlliance(a);
   removeFromAlliance(b);
   return createAlliance([a, b], "cross_district", CONSTANTS.ALLIANCE.START_STRENGTH_CROSS, frameNow);
@@ -98,7 +121,7 @@ function breakAlliance(actor, target, frameNow = performance.now()) {
   alliance.members = alliance.members.filter((id) => id !== actor.id);
   target.remember("betrayed_me", actor, 1.4);
   for (const peep of alivePeeps()) {
-    if (peep !== actor && peep.allianceId === alliance.id) peep.remember("betrayed_me", actor, 0.7);
+    if (peep !== actor && peep !== target && peep.allianceId === alliance.id) peep.remember("betrayed_me", actor, 0.7);
   }
   // Gossip: let nearby tributes observe the betrayal
   state.peeps.forEach((p) => { if (p.alive) p.observeBetrayal(actor, target, state); });
