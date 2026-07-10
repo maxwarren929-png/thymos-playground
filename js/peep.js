@@ -1,3537 +1,1315 @@
-const FACE_LABELS = {
-  0: "neutral",
-  1: "calm",
-  2: "blink",
-  3: "shocked",
-  4: "uneasy",
-  5: "annoyed",
-  6: "happy",
-  7: "worried",
-  8: "friendly",
-  9: "angry",
-  10: "furious",
-  11: "panicked",
-  12: "crying",
-};
+let nextCreatureId = 0;
 
-class Peep {
+class Creature {
   constructor(config, x, y) {
-    this.id = config.id;
-    this.name = config.name;
-    this.district = config.district;
+    this.id = nextCreatureId++;
+    this.name = config.name || `Creature ${this.id + 1}`;
     this.x = x;
     this.y = y;
     this.vx = 0;
     this.vy = 0;
     this.bodyFrame = Math.random() < 0.5 ? 0 : 1;
-    this.isRed = Math.random() < CONSTANTS.PEEP.RED_CHANCE;
-    this.faceFrame = Math.floor(Math.random() * CONSTANTS.PEEP.FACE_FRAME_COUNT);
-    this.faceLabel = FACE_LABELS[this.faceFrame] || "unknown";
+    this.isRed = Math.random() < CONSTANTS.CREATURE_VISUAL.RED_CHANCE;
+    this.faceFrame = Math.floor(Math.random() * CONSTANTS.CREATURE_VISUAL.FACE_FRAME_COUNT);
+
     this.alive = true;
-    this.isPlayerControlled = false;
-    this.health = CONSTANTS.PEEP.DEFAULT_HEALTH;
-    this.maxHealth = CONSTANTS.PEEP.DEFAULT_MAX_HEALTH;
-    this.stats = Peep.createStats(config.stats);
-    this.weapon = null;
-    this.hasWeapon = false;
-    this.kills = 0;
-    this.state = "rush_center";
-    this.goal = "rush_center";
-    this.goalTarget = null;
-    this.goalTime = 0;
-    this.openingGoal = "rush_center";
-    this.openingComplete = false;
-    this.lastGoalLogAt = 0;
+    this.health = CONSTANTS.CREATURE.HEALTH_START;
+    this.maxHealth = CONSTANTS.CREATURE.HEALTH_MAX;
+    this.hunger = CONSTANTS.CREATURE.HUNGER_START;
+    this.maxHunger = CONSTANTS.CREATURE.HUNGER_MAX;
+    this.thirst = CONSTANTS.CREATURE.THIRST_START;
+    this.maxThirst = CONSTANTS.CREATURE.THIRST_MAX;
+
+    this.age = 0;
+    this.maxAge = CONSTANTS.CREATURE.MAX_AGE + Math.random() * 20;
+    this.generation = config.generation || 0;
+    this.parentId = config.parentId || null;
+
+    this.state = "wander";
     this.stateTime = 0;
-    this.attackTime = 0;
-    this.attackApplied = false;
-    this.attackTarget = null;
-    this.loverId = null;
-    this.isLoverDead = false;
     this.wanderAngle = Math.random() * Math.PI * 2;
     this.wanderTime = 0;
     this.hop = Math.random();
     this.flip = Math.random() < 0.5 ? -1 : 1;
-    this._deathBy = null;
-    this.hitFlash = 0;
-    this.relationships = new Map();
+
+    this.reproductionCooldown = 0;
+    this.mateTarget = null;
+    this.followTarget = null;
+
+    // Allele-based genetics (two alleles per trait)
+    this.alleles = Creature.createAlleles(config.genome, config.parentAlleles);
+    this.genome = Creature.expressGenome(this.alleles);
+    this.diet = config.diet || "herbivore";
+    this.speciesId = config.speciesId || Creature._nextSpeciesId++;
+    this.speciesName = config.speciesName || Creature._generateSpeciesName(this.genome, this.diet);
+    this.visualScale = 0.5 + this.genome.size * 0.3;
+
+    this.nearestBush = null;
+    this.nearestWater = null;
+    this.huntTarget = null;
+    this.attackTimer = 0;
+
+    // Memory v2: spatial memory with confidence
     this.memories = [];
-    this.allianceId = null;
-    this.lastAllianceProposal = new Map();
-    this.betrayalCooldown = randomRange(CONSTANTS.ALLIANCE.BETRAYAL_COOLDOWN_MIN, CONSTANTS.ALLIANCE.BETRAYAL_COOLDOWN_MAX);
-    this.laserCooldown = 0;
-    this.laserDuration = 0;
-    this.laserPhase = "idle";
-    this.laserWindUp = 0;
-    this.laserAimX = 0;
-    this.laserAimY = 0;
+    this.exploreTarget = null;
+    this.totalDistanceTraveled = 0;
 
-    // Abilities & Traits
-    this.isFlying = false;
-    this.hasLaserEyes = false;
-    this.healOnKill = 0;
-    this.regeneration = 0;
-    this.armor = 0;
-    this.damageReduction = 0;
-    this.lifesteal = 0;
-    this.hasSuperSpeed = false;
-    this.hasMomentum = false;
-    this.trailPositions = [];
-    this.visualScale = 1;
-    this.speedDebuff = 1;
-    this.stealthModifier = 1;
-    this.scavengerMultiplier = 1;
-    this.explodeOnDeath = false;
-    this.loverMournTimer = 0;
-    this.allianceBonus = 0;
-    this.canCommand = false;
-    this.commandTargetId = null;
-    this.commandType = null;
-    this.commandTimer = 0;
-    this.recruitmentRange = CONSTANTS.ALLIANCE.VICINITY;
-    this.shoutText = "";
-    this.shoutType = "social";
-    this.shoutTimer = 0;
-    this.shoutDuration = 0;
-    this.lastShoutTime = 0;
-    this.conversationCooldown = 0;
-    this.lastLootShoutAt = 0;
-    this.sharedLootTarget = null;
+    // Exposure tracking for custom trait discovery
+    this.exposure = {
+      injured: 0,
+      near_water: 0,
+      starving: 0,
+      near_same_diet: 0,
+      fled: 0,
+      low_health: 0,
+      far_travel: 0,
+    };
+    this._lastExposureCheck = 0;
+    this._lastDiscoveryCheck = 0;
 
-    // Gossip System
-    this.gossipMemories = [];
-    this.gossipCooldown = 0;
-    this.knownLiars = new Set();
+    // Custom traits (list of trait keys)
+    this.customTraits = config.customTraits ? [...config.customTraits] : [];
 
-    // Conversation Thread System
-    this.activeThreads = new Map(); // otherId -> { topic, intensity, lastSpeakerId, turns, expiry }
-    this.lastShoutTopic = null;
-    this.lastShoutTargetId = null;
+    // Social learning
+    this._followCooldown = 0;
 
-    // Emotional Mood
-    this.dialogueMood = "calm";
-    this.moodStability = 0; // how long current mood has held (seconds)
-    this.stressLevel = 0; // 0-1 accumulated per tick
+    // Drives system
+    this.drives = {};
+    for (const key of Object.keys(CONSTANTS.DRIVES.BASELINE)) {
+      this.drives[key] = CONSTANTS.DRIVES.BASELINE[key] + (Math.random() - 0.5) * 0.2;
+      this.drives[key] = Math.max(0, Math.min(1, this.drives[key]));
+    }
+    this._lastDriveThreat = false;
 
-    // Stamina
-    this.stamina = CONSTANTS.STAMINA.START;
-    this.maxStamina = CONSTANTS.STAMINA.MAX;
-
-    // Spatial memory: danger zones (avoidance vector source)
-    this.dangerZones = [];
-
-    // Revenge targeting
-    this.revengeTargetId = null;
-    this.revengeExpiresAt = 0;
-    this.revengeCooldown = 0;
-
-    // Bait & lure
-    this.baitPosition = null;
-    this.baitExpiresAt = 0;
-    this.baitCooldown = 0;
-
-    // Alliance posture (mirrors alliance.posture for quick access)
-    this.posture = 'defensive';
-
-    // Combat barks (state-aware)
-    this.attackPhase = 'idle';
-    this.attackDamageDealt = false;
-    this.lastCombatBarkAt = 0;
-
-    // Casual chat (alliance flavor)
-    this.casualChatCooldown = 0;
-
-    // AI Brain Properties
-    this.isAI = !!config.isAI;
-    this.aiMemorySummary = "I have just entered the arena. I must survive.";
-    this.aiGoalOverride = null; // { goal, targetId, shout, expiresAt }
-    this.isThinking = false;
-
-    this.traits = [...(config.traits || [])];
-    this.applyTraits(this.traits);
-    this.applyAbilities(config.abilities || {});
-    this.profile = Peep.createProfile(this.stats);
-
-    this.centerX = config.center?.x ?? 1500;
-    this.centerY = config.center?.y ?? 900;
-    this.openingGoal = this.chooseOpeningGoal();
-    this.goal = this.openingGoal;
-    this.retreatAngle = Math.atan2(this.y - this.centerY, this.x - this.centerX) + randomRange(-0.6, 0.6);
+    // Language system
+    this.urgency = 0;
+    this.signalCooldown = 0;
+    this.productionVocab = config.productionVocab ? this._mutateVocab(config.productionVocab)
+      : this._generateInitialVocab();
+    this.episodicMemory = [];
+    this.focus = null;
+    this._lastSemanticState = null;
+    this._lastBroadcastTime = 0;
+    this._gameTimeAtBirth = performance.now();
+    this._pendingInferences = []; // { time, tokens, signalOrigin } for temporal learning
   }
 
-  shout(text, type = "social", duration = CONSTANTS.DIALOGUE.DEFAULT_DURATION) {
-    this.shoutText = text;
-    this.shoutType = type;
-    this.shoutTimer = duration;
-    this.shoutDuration = duration;
-    this.lastShoutTime = performance.now();
+  // === SPECIATION ===
+
+  static _nextSpeciesId = 1;
+
+  static _generateSpeciesName(genome, diet) {
+    const S = CONSTANTS.SPECIATION;
+    const sizeIdx = Math.round((genome.size - 0.5) / 1.5 * (S.NAME_SIZE_PARTS.length - 1));
+    const speedIdx = Math.round((genome.speed - 0.5) / 2.0 * (S.NAME_SPEED_PARTS.length - 1));
+    const strengthIdx = Math.round((genome.strength - 0.5) / 1.5 * (S.NAME_STRENGTH_PARTS.length - 1));
+    const eyesightIdx = Math.round((genome.eyesight - 0.5) / 1.5 * (S.NAME_EYESIGHT_PARTS.length - 1));
+    const size = S.NAME_SIZE_PARTS[Math.max(0, Math.min(S.NAME_SIZE_PARTS.length - 1, sizeIdx))];
+    const speed = S.NAME_SPEED_PARTS[Math.max(0, Math.min(S.NAME_SPEED_PARTS.length - 1, speedIdx))];
+    const strength = S.NAME_STRENGTH_PARTS[Math.max(0, Math.min(S.NAME_STRENGTH_PARTS.length - 1, strengthIdx))];
+    const eyesight = S.NAME_EYESIGHT_PARTS[Math.max(0, Math.min(S.NAME_EYESIGHT_PARTS.length - 1, eyesightIdx))];
+    const dietPart = S.NAME_DIET_PARTS[diet] || "Creature";
+    // Pick two dominant traits + diet
+    const parts = [strength, speed];
+    return `${size} ${parts[0]} ${parts[1]} ${dietPart}`;
   }
 
-  static randomLine(pool, context = {}) {
-    for (let attempts = 0; attempts < 3; attempts++) {
-      const line = pool[Math.floor(Math.random() * pool.length)];
-      const tokens = line.match(/{(\w+)}/g);
-      if (!tokens) return line;
-      const allResolvable = tokens.every(t => context[t.slice(1, -1)] !== undefined);
-      if (allResolvable) return line.replace(/{(\w+)}/g, (match, key) => context[key]);
+  static geneticDistance(a, b) {
+    let totalDist = 0;
+    const traits = Object.keys(GENOME_REGISTRY);
+    for (const name of traits) {
+      const al = a.alleles[name] || [0.5, 0.5];
+      const bl = b.alleles[name] || [0.5, 0.5];
+      const d1 = Math.abs(al[0] - bl[0]) + Math.abs(al[1] - bl[1]);
+      const d2 = Math.abs(al[0] - bl[1]) + Math.abs(al[1] - bl[0]);
+      totalDist += Math.min(d1, d2) / 2;
     }
-    const safeLine = pool.find(l => !l.includes('{'));
-    if (safeLine) return safeLine;
-    return pool[0].replace(/{(\w+)}/g, (match, key) => context[key] ?? match);
+    return totalDist / traits.length;
   }
 
-  static DIALOGUE = {
-    found_weapon: [
-      "Found a {weapon}!",
-      "Got myself a {weapon}!",
-      "Yes, a {weapon}!",
-      "{weapon}, check it out!",
-      "Nice, a {weapon}!",
-    ],
-    vengeance: [
-      "You'll pay for that!",
-      "That was my friend!",
-      "I'll make you regret that!",
-      "You're dead meat!",
-      "For my ally!",
-      "{killer}, you'll pay for that!",
-      "That was my friend, {killer}!",
-      "I'll make you regret that, {killer}!",
-      "You're dead meat, {killer}!",
-      "For my ally! I'll get you, {killer}!",
-    ],
-    fleeing: [
-      "Fall back!",
-      "Not worth it!",
-      "I'm out!",
-      "Too hot!",
-      "Getting out of here!",
-      "Fall back from {enemy}!",
-      "Not worth it against {enemy}!",
-      "I'm out, {enemy} too strong!",
-      "Too hot, {enemy} is coming!",
-      "Getting out of here! {enemy} is hunting me!",
-    ],
-    defend: [
-      "I've got your back!",
-      "I'm coming!",
-      "Hang in there!",
-      "On my way!",
-      "Don't worry!",
-      "I've got your back, {ally}!",
-      "I'm coming, {ally}!",
-      "Hang in there, {ally}!",
-      "On my way to you, {ally}!",
-      "Don't worry, {ally}, I'm here!",
-    ],
-    attack: [
-      "Flank them!",
-      "Get them!",
-      "Attack now!",
-      "Move in!",
-      "Together!",
-      "Flank {enemy}!",
-      "Get {enemy}!",
-      "Attack {enemy} now!",
-      "Move in on {enemy}!",
-      "Together against {enemy}!",
-    ],
-    betray: [
-      "Sorry about this...",
-      "Nothing personal.",
-      "It's just business.",
-      "Can't trust anyone.",
-      "Goodbye.",
-      "Sorry about this, {victim}...",
-      "Nothing personal, {victim}.",
-      "It's just business, {victim}.",
-      "Can't trust anyone, not even you {victim}.",
-      "Goodbye, {victim}.",
-    ],
-    taunt: [
-      "Is that all you've got?",
-      "Not so tough now!",
-      "Stay down.",
-      "Too easy.",
-      "Any last words?",
-      "Is that all you've got, {enemy}?",
-      "Not so tough now, {enemy}!",
-      "Stay down, {enemy}.",
-      "Too easy, {enemy}.",
-      "Any last words, {enemy}?",
-    ],
-    panic: [
-      "NO!!!",
-      "Not like this!",
-      "This can't be happening!",
-      "I don't want to die!",
-    ],
-    lover_died: [
-      "NOOOOO!!!",
-      "Not you too!",
-      "Why?!",
-      "I can't go on!",
-    ],
-    revenge: [
-      "ENOUGH!",
-      "I'll kill you!",
-      "You're mine!",
-      "Time to die!",
-      "ENOUGH, {enemy}!",
-      "I'll kill you, {enemy}!",
-      "You're mine, {enemy}!",
-      "Time to die, {enemy}!",
-    ],
-    affirm: [
-      "Right behind you!",
-      "On it!",
-      "Let's go!",
-      "Copy that!",
-      "With you!",
-      "Right behind you, {ally}!",
-      "On it, {ally}!",
-      "Let's go, {ally}!",
-      "Copy that, {ally}!",
-      "With you, {ally}!",
-    ],
-    encourage: [
-      "You've got this!",
-      "Keep fighting!",
-      "Don't give up!",
-      "We'll make it!",
-      "Stay strong!",
-      "You've got this, {ally}!",
-      "Keep fighting, {ally}!",
-      "Don't give up, {ally}!",
-      "We'll make it, {ally}!",
-      "Stay strong, {ally}!",
-    ],
-    respond_ally: [
-      "Together we're stronger!",
-      "I'm right here!",
-      "We've got this!",
-      "Let's show them!",
-      "For the alliance!",
-      "Together we're stronger, {ally}!",
-      "I'm right here, {ally}!",
-      "We've got this, {ally}!",
-      "Let's show them, {ally}!",
-      "For the alliance, {ally}!",
-    ],
-    respond_enemy: [
-      "You talk too much.",
-      "Come say that closer.",
-      "We'll see about that.",
-      "Big talk for someone about to die.",
-      "Shut up and fight.",
-      "{enemy}, you talk too much.",
-      "Come say that closer, {enemy}.",
-      "We'll see about that, {enemy}.",
-      "Big talk for someone about to die, {enemy}.",
-      "Shut up and fight, {enemy}.",
-    ],
-    loot_response: [
-      "Nice find!",
-      "Save some for me!",
-      "I'm jealous!",
-      "Good, we needed that!",
-      "Keep it safe!",
-      "Nice find, {ally}!",
-      "Save some for me, {ally}!",
-      "I'm jealous, {ally}!",
-      "Good, we needed that, {ally}!",
-      "Keep it safe, {ally}!",
-    ],
-    gossip_kill: [
-      "Did you see {killer} take out {victim}?",
-      "{killer} just murdered {victim} out there!",
-      "Watch out for {killer}, they got {victim}!",
-      "I saw {killer} kill {victim} with my own eyes!",
-      "{victim} is dead. {killer} did it.",
-      "Word is {killer} is hunting people down.",
-    ],
-    gossip_betrayal: [
-      "Don't trust {betrayer}, they turned on {victim}.",
-      "{betrayer} backstabbed {victim}! Can you believe it?",
-      "I heard {betrayer} betrayed {victim}.",
-      "Stay away from {betrayer} — they turned on {victim}.",
-      "{victim} trusted {betrayer} and got stabbed in the back.",
-    ],
-    gossip_danger: [
-      "{target} is armed and dangerous.",
-      "Stay clear of {target}, they're hunting people.",
-      "I saw {target} with a weapon. Watch yourself.",
-      "{target} is killing anyone they see.",
-      "Don't go near {target}. Not safe.",
-    ],
-    gossip_acknowledge: [
-      "Really?",
-      "I had a feeling.",
-      "Thanks for the warning.",
-      "I'll keep an eye out.",
-      "Good to know.",
-      "That doesn't surprise me.",
-      "Figures.",
-    ],
-    gossip_liar: [
-      "Don't listen to {liar}, they lie.",
-      "{liar} is full of it.",
-      "I caught {liar} spreading false rumors.",
-      "{liar} Can't be trusted.",
-      "Everything {liar} says is a lie.",
-      "Ignore anything from {liar}.",
-      "{liar}? Known liar.",
-    ],
-    env_alone: [
-      "Where did everyone go?",
-      "Too quiet...",
-      "Is anyone else out here?",
-      "Hello?",
-      "Feels empty.",
-    ],
-    env_death_nearby: [
-      "I smell blood.",
-      "Someone died here.",
-      "This place reeks of death.",
-      "Not safe here.",
-      "Too many bodies...",
-    ],
-    env_cornucopia: [
-      "The cornucopia is deadly today.",
-      "So much fighting near the center.",
-      "That center is a war zone.",
-      "Stay away from the middle.",
-    ],
-    env_weathered: [
-      "Getting tired...",
-      "How long has it been?",
-      "My legs are giving out.",
-      "Need to rest soon.",
-    ],
-    env_late: [
-      "How many of us are left?",
-      "Just a handful now...",
-      "I can hear every footstep.",
-      "Where did everyone go?",
-      "It's down to us.",
-    ],
-    env_endgame: [
-      "Only one walks out.",
-      "Just you and me now.",
-      "One of us isn't going home.",
-      "Come on. End it.",
-      "No more running.",
-    ],
-    revenge_named: [
-      "That was for {ally}!",
-      "{killer}! For {ally}!",
-      "This is for {ally}, {killer}!",
-      "{ally} is avenged!",
-      "You killed {ally}, {killer}. Now you pay.",
-    ],
-    betrayal_named: [
-      "I remember what you did, {betrayer}.",
-      "You turned on me, {betrayer}.",
-      "{betrayer}, you broke us.",
-      "Should never have trusted you, {betrayer}.",
-      "Your turn, {betrayer}.",
-    ],
-    attack_hit: [
-      "Got you.",
-      "There.",
-      "Stay down.",
-      "Feel that?",
-      "Too slow.",
-    ],
-    attack_kill: [
-      "Done.",
-      "Stay down.",
-      "And stay dead.",
-      "Pathetic.",
-      "That's one.",
-    ],
-    attack_miss: [
-      "Stand still!",
-      "Hold on—",
-      "Missed!",
-      "Damn.",
-      "Come here!",
-    ],
-    casual_chat: [
-      "What district you from?",
-      "You see the sunrise this morning?",
-      "I had a sister back home.",
-      "Didn't think I'd make it this far.",
-      "You hungry? I'm hungry.",
-      "This arena's bigger than it looked.",
-      "You ever think we'll get out of here?",
-      "I can't remember the last quiet minute.",
-      "What's the food like where you're from?",
-      "I keep thinking I hear cannons.",
-      "You trust the others?",
-      "Heard it gets worse at night.",
-      "Smells like rain.",
-      "My district never wins these.",
-    ],
-    casual_chat_response: [
-      "Same here, almost.",
-      "Yeah. Yeah, I get it.",
-      "Don't remind me.",
-      "Tell me about it.",
-      "Funny you should say that.",
-      "It's been a long day.",
-      "I try not to think about home.",
-      "We're still here, aren't we?",
-      "Mm.",
-      "Save your breath.",
-      "I hear you.",
-      "Take it easy. Save your strength.",
-    ],
-  };
-
-  // --- MOOD-AWARE POOLS ---
-  static MOOD_POOLS = {
-    fleeing: {
-      calm: [
-        "Better to retreat.",
-        "I'll pull back for now.",
-        "Not the right moment.",
-        "Let's regroup elsewhere.",
-      ],
-      wary: [
-        "Fall back!",
-        "Not worth it!",
-        "I'm out!",
-        "Too hot!",
-        "Getting out of here!",
-      ],
-      stressed: [
-        "Move! Move!",
-        "Get away from me!",
-        "I can't take this!",
-        "I'm leaving NOW!",
-      ],
-      panicked: [
-        "RUN!",
-        "GET AWAY!",
-        "NO NO NO!",
-        "LEAVE ME ALONE!",
-        "GO AWAY!",
-      ],
-    },
-    defend: {
-      calm: [
-        "I've got your back.",
-        "On my way.",
-        "I'll support you.",
-      ],
-      wary: [
-        "I've got your back!",
-        "I'm coming!",
-        "Hang in there!",
-        "On my way!",
-        "Don't worry!",
-      ],
-      stressed: [
-        "Hold on, I'm here!",
-        "Don't die on me!",
-        "I'm rushing to you!",
-      ],
-      panicked: [
-        "HOLD ON!",
-        "I'M COMING!",
-        "DON'T LEAVE ME!",
-      ],
-    },
-    attack: {
-      calm: [
-        "Flank them.",
-        "Get them.",
-        "Strike now.",
-      ],
-      wary: [
-        "Flank them!",
-        "Get them!",
-        "Attack now!",
-        "Move in!",
-        "Together!",
-      ],
-      stressed: [
-        "RUSH THEM!",
-        "TAKE THEM DOWN!",
-        "ATTACK!",
-      ],
-      panicked: [
-        "KILL THEM!",
-        "END IT!",
-        "NOW!",
-      ],
-    },
-    taunt: {
-      calm: [
-        "Is that all?",
-        "Not impressed.",
-        "Stay down.",
-      ],
-      wary: [
-        "Is that all you've got?",
-        "Not so tough now!",
-        "Stay down.",
-        "Too easy.",
-        "Any last words?",
-      ],
-      stressed: [
-        "PATHETIC!",
-        "WEAK!",
-        "STAY DOWN!",
-      ],
-      panicked: [
-        "DIE!",
-        "JUST DIE!",
-      ],
-    },
-    panic: {
-      calm: [
-        "No...",
-        "This is bad.",
-        "Not good.",
-      ],
-      wary: [
-        "NO!!!",
-        "Not like this!",
-        "This can't be happening!",
-        "I don't want to die!",
-      ],
-      stressed: [
-        "PLEASE NO!",
-        "SOMEONE HELP!",
-        "I CAN'T DO THIS!",
-      ],
-      panicked: [
-        "AAAAAAA!",
-        "NO NO NO NO!",
-        "HELP ME!",
-        "I DON'T WANT TO DIE!",
-      ],
-    },
-    revenge: {
-      calm: [
-        "That was unwise.",
-        "You'll regret that.",
-        "I'm coming for you.",
-      ],
-      wary: [
-        "ENOUGH!",
-        "I'll kill you!",
-        "You're mine!",
-        "Time to die!",
-      ],
-      stressed: [
-        "YOU'RE DEAD!",
-        "I'LL END YOU!",
-        "PAY FOR THAT!",
-      ],
-      panicked: [
-        "KILL!",
-        "DESTROY!",
-      ],
-    },
-    vengeance: {
-      calm: [
-        "You'll answer for that.",
-        "I won't forget this.",
-        "There will be consequences.",
-      ],
-      wary: [
-        "You'll pay for that!",
-        "That was my friend!",
-        "I'll make you regret that!",
-        "You're dead meat!",
-        "For my ally!",
-      ],
-      stressed: [
-        "I'LL KILL YOU!",
-        "FOR THEM!",
-        "PAY WITH YOUR LIFE!",
-      ],
-      panicked: [
-        "MURDERER!",
-        "DIE!",
-      ],
-    },
-  };
-
-  static getMoodPool(category, mood = "calm") {
-    const moodEntry = Peep.MOOD_POOLS[category];
-    if (!moodEntry) return Peep.DIALOGUE[category] || [];
-    const pool = moodEntry[mood] || moodEntry.calm;
-    return pool && pool.length > 0 ? pool : (Peep.DIALOGUE[category] || []);
+  speciesColor() {
+    const S = CONSTANTS.SPECIATION;
+    const hue = (this.speciesId * S.COLOR_HUE_STEP) % 360;
+    return `hsl(${hue}, ${S.COLOR_SATURATION * 100}%, ${S.COLOR_LIGHTNESS * 100}%)`;
   }
 
-  // --- FRAGMENT BUILDER ---
-  static FRAGMENTS = {
-    prefix: {
-      calm: ["", "Listen, ", "Hey, ", "Well, ", "I guess ", "Seems like "],
-      wary: ["", "Hey, ", "Look, ", "", "Well, "],
-      stressed: ["", "Hey! ", "Come on, ", "Ugh, ", ""],
-      panicked: ["", "Hey! ", "Come on! ", "Please, ", ""],
-    },
-    subject: {
-      calm: ["they", "that one", "{target}"],
-      wary: ["{target}", "they", "that one", "them"],
-      stressed: ["{target}", "THEY", "them", "that"],
-      panicked: ["{target}", "THEM", "THAT ONE"],
-    },
-    verb: {
-      calm: [
-        "is dangerous", "should be avoided", "might be trouble",
-        "looks armed", "seems hostile", "is hunting",
-      ],
-      wary: [
-        "is dangerous", "is hunting", "looks armed",
-        "is hostile", "is a threat",
-      ],
-      stressed: [
-        "is coming", "is going to kill us", "is hunting",
-        "is armed", "is a threat",
-      ],
-      panicked: [
-        "is going to kill us", "is RIGHT THERE", "is hunting me",
-        "is coming", "is a threat",
-      ],
-    },
-    suffix: {
-      calm: [".", ", be careful.", ", okay?", "..."],
-      wary: [".", "!", ", watch out.", "..."],
-      stressed: ["!", "! Run!", "! NOW!", "..."],
-      panicked: ["!", "! RUN!", "! HELP!", "!"],
-    },
-  };
+  // === LANGUAGE SYSTEM ===
 
-  static buildFragmentLine(intent, mood, context) {
-    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    const pre = pick(Peep.FRAGMENTS.prefix[mood] || Peep.FRAGMENTS.prefix.calm);
-    const subj = pick(Peep.FRAGMENTS.subject[mood] || Peep.FRAGMENTS.subject.calm);
-    const verb = pick(Peep.FRAGMENTS.verb[mood] || Peep.FRAGMENTS.verb.calm);
-    const suf = pick(Peep.FRAGMENTS.suffix[mood] || Peep.FRAGMENTS.suffix.calm);
-
-    let line = `${pre}${subj} ${verb}${suf}`;
-    if (context) {
-      line = line.replace(/{(\w+)}/g, (match, key) => context[key] ?? match);
+  _generateInitialVocab() {
+    const vocab = [];
+    const count = 1 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < count; i++) {
+      const len = 1 + Math.floor(Math.random() * 2);
+      const tokens = [];
+      for (let j = 0; j < len; j++) {
+        tokens.push(Math.floor(Math.random() * CONSTANTS.LANGUAGE.MAX_TOKEN_VALUE));
+      }
+      const situation = this._randomSituation();
+      vocab.push({ tokens, situation, confidence: 0.3 + Math.random() * 0.3, positive: 1, negative: 0 });
     }
-    return line.trim();
+    return vocab;
   }
 
-  applyTraits(traitNames) {
-    traitNames.forEach(name => {
-        const trait = TRAIT_LIBRARY[name.toLowerCase()];
-        if (!trait) return;
-        if (trait.stats) this.applyStats(trait.stats);
-        if (trait.abilities) this.applyAbilities(trait.abilities);
-        if (trait.startingWeapon) {
-          const weapon = trait.startingWeapon === "random"
-            ? ["gun", "bat", "shotgun", "axe"][Math.floor(Math.random() * 4)]
-            : trait.startingWeapon;
-          this.equipWeapon(weapon);
-        }
-    });
+  _randomSituation() {
+    const focusTypes = ["none", "bush", "water", "hound", "creature"];
+    const ft = focusTypes[Math.floor(Math.random() * focusTypes.length)];
+    const nb = Math.random() < 0.5 ? "0" : "1";
+    const ab = Math.random() < 0.5 ? "0" : "1";
+    const vb = Math.random() < 0.5 ? "0" : "1";
+    const sb = Math.random() < 0.5 ? "0" : "1";
+    return `${ft}_${nb}${ab}${vb}${sb}`;
   }
 
-  applyStats(stats) {
-    for (const [name, value] of Object.entries(stats)) {
-      if (Object.prototype.hasOwnProperty.call(STAT_REGISTRY, name)) {
-        this.stats[name] = clampStat(value);
-      }
-    }
+  _situationFromState(state, focusType) {
+    const ft = focusType || "none";
+    const nb = state[0] > 0.5 ? "1" : "0";
+    const ab = state[1] > 0.5 ? "1" : "0";
+    const vb = state[2] > 0.5 ? "1" : "0";
+    const sb = state[3] > 0.5 ? "1" : "0";
+    return `${ft}_${nb}${ab}${vb}${sb}`;
   }
 
-  applyAbilities(abilities) {
-    const previousMaxHealth = this.maxHealth;
-    const { maxHealth, maxHealthDelta, ...rest } = abilities;
-    Object.assign(this, rest);
-    if (maxHealth !== undefined) {
-      this.maxHealth = Math.max(1, Number(maxHealth) || 1);
-    }
-    if (maxHealthDelta !== undefined) {
-      this.maxHealth = Math.max(1, this.maxHealth + (Number(maxHealthDelta) || 0));
-    }
-    if (this.maxHealth !== previousMaxHealth) {
-      this.health = Math.min(this.maxHealth, this.health + Math.max(0, this.maxHealth - previousMaxHealth));
-    }
-    this.damageReduction = Math.max(0, Math.min(0.9, Number(this.damageReduction) || 0));
-    this.stealthModifier = Math.max(0.2, Math.min(2, Number(this.stealthModifier) || 1));
-    this.scavengerMultiplier = Math.max(0.2, Math.min(4, Number(this.scavengerMultiplier) || 1));
-    this.speedDebuff = Math.max(0.2, Math.min(2, Number(this.speedDebuff) || 1));
-  }
-
-    // --- ROMANCE LOGIC ---
-    tryFallInLove(peeps, world, dt) {
-      if (this.loverId) return;
-      const MIN_COURTSHIP = CONSTANTS.ROMANCE.MIN_COURTSHIP; // seconds of cumulative proximity needed
-      for (const other of peeps) {
-        if (other === this || other.loverId || !other.alive) continue;
-        const rel = this.relationshipWith(other);
-        const dist = Math.hypot(other.x - this.x, other.y - this.y);
-        if (dist < CONSTANTS.ROMANCE.PROXIMITY_RANGE) {
-          // Accumulate proximity time for both tributes
-          rel.timeNear += dt;
-          const otherRel = other.relationshipWith(this);
-          if (rel.timeNear >= MIN_COURTSHIP
-            && rel.trust > CONSTANTS.ROMANCE.MIN_TRUST
-            && rel.bond > CONSTANTS.ROMANCE.MIN_BOND
-            && otherRel.trust > CONSTANTS.ROMANCE.MIN_TRUST
-            && otherRel.bond > CONSTANTS.ROMANCE.MIN_BOND) {
-            this.loverId = other.id;
-            other.loverId = this.id;
-            world.logEvent({
-                type: "romance",
-                proposer: this.name,
-                candidate: other.name,
-                timestamp: performance.now(),
-                x: this.x,
-                y: this.y
-            });
-            break;
-          }
-        }
-      }
-    }
-
-    isLover(other) {
-      return this.loverId === other.id;
-    }
-
-    // --- MOOD & THREAD SYSTEM ---
-
-    updateMood(dt, world) {
-      const alive = world.peeps.filter(p => p.alive).length;
-      const nearest = this.findNearestEnemy(world.peeps, world, this.profile?.enemyAwareness || 200);
-      const nearestDist = nearest.target ? nearest.dist : Infinity;
-      const healthRatio = this.health / this.maxHealth;
-
-      // Stress factors accumulate into a 0-1 score
-      let stress = 0;
-      if (nearestDist < 120) stress += 0.45;
-      else if (nearestDist < 250) stress += 0.25;
-      if (healthRatio <= 0.25) stress += 0.35;
-      else if (healthRatio <= 0.5) stress += 0.2;
-      if (alive <= 3) stress += 0.2;
-      if (this.state === "attack" || this.state === "charge") stress += 0.15;
-      if (this.state === "flee" || this.state === "retreat") stress += 0.25;
-      if (this.loverMournTimer > 0) stress += 0.2;
-      if (!this.hasWeapon && nearest.target?.hasWeapon) stress += 0.1;
-
-      // Hysteresis: require sustained stress or sustained calm to flip moods
-      if (stress > 0.6) this.stressLevel = Math.min(1, this.stressLevel + dt * 1.5);
-      else if (stress < 0.25) this.stressLevel = Math.max(0, this.stressLevel - dt * 0.8);
-      else this.stressLevel = this.stressLevel * 0.95 + stress * 0.05;
-
-      const oldMood = this.dialogueMood;
-      let newMood = oldMood;
-      if (this.stressLevel > 0.75) newMood = "panicked";
-      else if (this.stressLevel > 0.45) newMood = "stressed";
-      else if (this.stressLevel > 0.2) newMood = "wary";
-      else newMood = "calm";
-
-      if (newMood === oldMood) {
-        this.moodStability += dt;
-      } else {
-        // Only flip if we've been in current mood long enough or stress jump is huge
-        if (this.moodStability > 1.2 || Math.abs(this.stressLevel - (oldMood === "panicked" ? 0.85 : oldMood === "stressed" ? 0.55 : oldMood === "wary" ? 0.3 : 0.1)) > 0.3) {
-          this.dialogueMood = newMood;
-          this.moodStability = 0;
-        }
-      }
-    }
-
-    startThread(otherId, topic, intensity = 0.3) {
-      const thread = this.activeThreads.get(otherId);
-      if (thread && thread.topic === topic) {
-        thread.intensity = Math.min(1, thread.intensity + 0.1);
-        thread.turns += 1;
-        thread.expiry = performance.now() + 8000;
-        return;
-      }
-      this.activeThreads.set(otherId, {
-        topic,
-        intensity,
-        lastSpeakerId: this.id,
-        turns: 1,
-        expiry: performance.now() + 8000,
-      });
-    }
-
-    updateThreads(dt) {
-      const now = performance.now();
-      for (const [id, thread] of this.activeThreads) {
-        if (now > thread.expiry) {
-          this.activeThreads.delete(id);
-        }
-      }
-    }
-
-    continueThread(other, world) {
-      const thread = this.activeThreads.get(other.id);
-      if (!thread || thread.lastSpeakerId === this.id) return false;
-      if (thread.turns >= 4) { this.activeThreads.delete(other.id); return false; }
-
-      // Topic-specific back-and-forth
-      const isAlly = this.isAlliedWith(other, world);
-      let pool = null;
-      let ctx = {};
-
-      if (thread.topic === "defending_lover") {
-        pool = isAlly ? Peep.getMoodPool("defend", this.dialogueMood) : Peep.DIALOGUE.respond_enemy;
-        ctx = isAlly ? { ally: other.name } : { enemy: other.name };
-      } else if (thread.topic === "enemy_spotted") {
-        pool = isAlly ? Peep.getMoodPool("attack", this.dialogueMood) : Peep.DIALOGUE.respond_enemy;
-        ctx = isAlly ? { enemy: "them" } : { enemy: other.name };
-      } else if (thread.topic === "shared_fear") {
-        pool = isAlly ? Peep.getMoodPool("fleeing", this.dialogueMood) : Peep.DIALOGUE.respond_enemy;
-        ctx = isAlly ? { enemy: "them" } : { enemy: other.name };
-      } else if (thread.topic === "loot_alert") {
-        pool = Peep.DIALOGUE.loot_response;
-        ctx = { ally: other.name };
-      } else if (thread.topic === "vengeance") {
-        pool = Peep.getMoodPool("vengeance", this.dialogueMood);
-        ctx = { killer: other.name };
-      } else if (thread.topic === "social_banter") {
-        pool = isAlly ? Peep.DIALOGUE.respond_ally : Peep.DIALOGUE.respond_enemy;
-        ctx = isAlly ? { ally: other.name } : { enemy: other.name };
-      }
-
-      // Only mutate thread state if we actually produce a line — otherwise
-      // dead topics burn the turn budget and stall the conversation.
-      if (pool && pool.length > 0) {
-        thread.turns += 1;
-        thread.lastSpeakerId = this.id;
-        thread.expiry = performance.now() + 8000;
-        this.shout(Peep.randomLine(pool, ctx), "social", 2.0);
-        this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
-        return true;
-      }
-      return false;
-    }
-
-    environmentalShout(world) {
-      if (this.shoutTimer > 0 || this.conversationCooldown > 0) return;
-      if (Math.random() > 0.008) return; // very low chance per tick
-
-      const phase = this.getGamePhase(world);
-      if (phase === 'endgame' && Math.random() < 0.5) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.env_endgame), "social", 2.8);
-        return;
-      }
-      if (phase === 'late' && Math.random() < 0.3) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.env_late), "social", 2.8);
-        return;
-      }
-
-      // Check solitude
-      const nearbyAlive = world.peeps.filter(p => p.alive && p !== this && Math.hypot(p.x - this.x, p.y - this.y) < 400);
-      if (nearbyAlive.length === 0) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.env_alone), "social", 2.5);
-        return;
-      }
-
-      // Check recent death nearby (blood splats / corpses)
-      const effects = world.hitEvents || [];
-      const nearbyDeath = effects.some(e => Math.hypot(e.x - this.x, e.y - this.y) < 200);
-      if (nearbyDeath || world.peeps.some(p => !p.alive && Math.hypot(p.x - this.x, p.y - this.y) < 150)) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.env_death_nearby), "social", 2.5);
-        return;
-      }
-
-      // Check closeness to cornucopia center
-      const distToCenter = Math.hypot(this.x - world.center.x, this.y - world.center.y);
-      if (distToCenter < 300 && nearbyAlive.length >= 3) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.env_cornucopia), "social", 2.5);
-        return;
-      }
-
-      // Fatigue (low stamina trumps time-based)
-      if (this.stamina <= CONSTANTS.STAMINA.LOW_THRESHOLD && Math.random() < 0.3) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.env_weathered), "social", 2.5);
-        return;
-      }
-
-      // Fatigue (late game / long match)
-      const elapsed = world.elapsed;
-      if (elapsed > 90 && Math.random() < 0.3) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.env_weathered), "social", 2.5);
-        return;
-      }
-    }
-
-    getGamePhase(world) {
-      const aliveCount = world.peeps.filter(p => p.alive).length;
-      const initial = world.initialPopulation || aliveCount || 12;
-      const elapsed = world.elapsed || 0;
-      if (elapsed < CONSTANTS.GAME_PHASE.OPENING_SECS) return 'opening';
-      if (aliveCount <= CONSTANTS.GAME_PHASE.ENDGAME_ALIVE) return 'endgame';
-      if (aliveCount <= CONSTANTS.GAME_PHASE.LATE_ALIVE) return 'late';
-      if (aliveCount <= initial * CONSTANTS.GAME_PHASE.EARLY_ALIVE_FRAC) return 'mid';
-      return 'early';
-    }
-
-    updateStamina(dt) {
-      let drain = 0;
-      let regen = 0;
-      switch (this.state) {
-        case 'charge': case 'rush_center': drain = CONSTANTS.STAMINA.DRAIN_CHARGE; break;
-        case 'flee': drain = CONSTANTS.STAMINA.DRAIN_FLEE; break;
-        case 'panic': drain = CONSTANTS.STAMINA.DRAIN_PANIC; break;
-        case 'attack': drain = CONSTANTS.STAMINA.DRAIN_ATTACK; break;
-        case 'wander': regen = CONSTANTS.STAMINA.REGEN_WANDER; break;
-        case 'hide': regen = CONSTANTS.STAMINA.REGEN_HIDE; break;
-        case 'retreat': drain = CONSTANTS.STAMINA.DRAIN_FLEE * 0.6; break;
-        default: regen = CONSTANTS.STAMINA.REGEN_IDLE; break;
-      }
-      if (drain > 0) {
-        this.stamina = Math.max(0, this.stamina - drain * dt * (1 + (10 - this.stats.stamina) * 0.04));
-        if (this.stamina <= CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD && this.state !== 'attack' && this.state !== 'panic') {
-          if (this.shoutTimer <= 0 && Math.random() < 0.01) {
-            this.shout(Peep.randomLine(Peep.DIALOGUE.env_weathered), "social", 2.0);
-          }
-        }
-      } else if (regen > 0) {
-        this.stamina = Math.min(this.maxStamina, this.stamina + regen * dt * (1 + this.stats.stamina * 0.03));
-      }
-    }
-
-    findBaitOpportunity(world) {
-      if (this.stats.cunning < CONSTANTS.BAIT.MIN_CUNNING) return null;
-      if (this.baitCooldown > 0) return null;
-      if (!this.hasWeapon) return null;
-      if (this.health <= 1) return null;
-      const scanR = CONSTANTS.BAIT.SCAN_RADIUS;
-      const weapons = (world.groundWeapons || [])
-        .map(w => ({ ...w, dist: Math.hypot(w.x - this.x, w.y - this.y) }))
-        .filter(w => w.dist <= scanR)
-        .sort((a, b) => a.dist - b.dist);
-      if (weapons.length < CONSTANTS.BAIT.MIN_WEAPONS_NEARBY) return null;
-      const weapon = weapons[0];
-      const enemiesApproaching = world.peeps.some(p =>
-        p.alive && p !== this && !this.isAlliedWith(p, world) && !p.hasWeapon &&
-        Math.hypot(p.x - weapon.x, p.y - weapon.y) < scanR * 0.7
-      );
-      if (!enemiesApproaching) return null;
-      const angle = Math.atan2(weapon.y - this.y, weapon.x - this.x);
-      return {
-        x: weapon.x - Math.cos(angle) * CONSTANTS.BAIT.LURK_OFFSET,
-        y: weapon.y - Math.sin(angle) * CONSTANTS.BAIT.LURK_OFFSET,
-        weaponX: weapon.x,
-        weaponY: weapon.y,
-        expiresAt: performance.now() + CONSTANTS.BAIT.DURATION * 1000,
-      };
-    }
-
-    considerCasualChat(world) {
-      if (this.casualChatCooldown > 0) return;
-      if (this.shoutTimer > 0 || this.conversationCooldown > 0) return;
-      if (this.stressLevel > CONSTANTS.CASUAL_CHAT.STRESS_MAX) return;
-      if (Math.random() > CONSTANTS.CASUAL_CHAT.CHANCE) return;
-      const candidate = world.peeps.find(p => {
-        if (!p.alive || p === this) return false;
-        if (!this.isAlliedWith(p, world)) return false;
-        const rel = this.relationshipWith(p);
-        if (rel.bond < CONSTANTS.CASUAL_CHAT.MIN_bond) return false;
-        const d = Math.hypot(p.x - this.x, p.y - this.y);
-        return d <= CONSTANTS.CASUAL_CHAT.ALLY_PROXIMITY && p.shoutTimer <= 0 && p.conversationCooldown <= 0;
-      });
-      if (!candidate) return;
-      const line = Peep.randomLine(Peep.DIALOGUE.casual_chat);
-      this.shout(line, "social", CONSTANTS.CASUAL_CHAT.DURATION);
-      this.casualChatCooldown = CONSTANTS.CASUAL_CHAT.COOLDOWN;
-      if (Math.random() < CONSTANTS.CASUAL_CHAT.RESPONSE_CHANCE) {
-        candidate._pendingCasualResponse = performance.now() + 600 + Math.random() * 800;
-      }
-    }
-
-    maybeCombatBark(poolName, ctx = {}) {
-      if (this.lastCombatBarkAt > 0) return;
-      if (this.shoutTimer > 0 || this.conversationCooldown > 0) return;
-      const pool = Peep.DIALOGUE[poolName] || Peep.DIALOGUE.attack_hit;
-      this.shout(Peep.randomLine(pool, ctx), "social", 1.4);
-      this.lastCombatBarkAt = CONSTANTS.COMBAT_BARK.COOLDOWN;
-    }
-
-    hearShouts(world) {
-      if (this.conversationCooldown > 0 || this.shoutTimer > 0) return;
-      for (const other of world.peeps) {
-        if (other === this || !other.alive) continue;
-        if (other.shoutTimer <= 0 || other.shoutTimer > other.shoutDuration - CONSTANTS.DIALOGUE.LISTEN_WINDOW) continue;
-        const dist = Math.hypot(other.x - this.x, other.y - this.y);
-        if (dist > CONSTANTS.DIALOGUE.MAX_DIST) continue;
-
-        // Gossips bypass normal conversation
-        if (other.shoutType === "gossip") {
-          this.processGossipShout(other, world);
-          continue;
-        }
-
-        // Try to continue an active thread first
-        if (this.activeThreads.has(other.id)) {
-          if (this.continueThread(other, world)) return;
-        }
-
-        // Relationship-named retort: if `other` has wronged me (killed ally or betrayed me), retort by name
-        const _namedMem = this.memories.find(m => m.actorId === other.id && (m.type === 'killed_ally' || m.type === 'betrayed_me'));
-        if (_namedMem && Math.random() < 0.6) {
-          const _namedPool = _namedMem.type === 'killed_ally' ? Peep.DIALOGUE.revenge_named : Peep.DIALOGUE.betrayal_named;
-          const _namedCtx = _namedMem.type === 'killed_ally'
-            ? { killer: other.name, ally: _namedMem.allyName || 'my ally' }
-            : { betrayer: other.name };
-          this.shout(Peep.randomLine(_namedPool, _namedCtx), "social", 2.4);
-          this.startThread(other.id, "vengeance");
-          this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
-          break;
-        }
-
-        if (Math.random() > CONSTANTS.DIALOGUE.RESPONSE_CHANCE) continue;
-        const isAlly = this.isAlliedWith(other, world);
-        const rel = this.relationshipWith(other);
-        let pool = null;
-        let topic = null;
-
-        if (isAlly || rel.bond > 50) {
-          if (other.shoutType === "tactical") {
-            pool = Peep.getMoodPool("attack", this.dialogueMood);
-            topic = "enemy_spotted";
-          } else if (other.shoutType === "loot") {
-            pool = Peep.DIALOGUE.loot_response;
-            topic = "loot_alert";
-          } else {
-            pool = Peep.DIALOGUE.respond_ally;
-            topic = "social_banter";
-          }
-        } else if (rel.anger > 40) {
-          pool = Peep.DIALOGUE.respond_enemy;
-          topic = "enemy_spotted";
-        } else if (Math.random() < 0.3) {
-          if (Math.random() < 0.5) {
-            pool = Peep.DIALOGUE.encourage;
-            topic = "social_banter";
-          } else {
-            pool = Peep.getMoodPool("taunt", this.dialogueMood);
-            topic = "enemy_spotted";
-          }
-        }
-        if (pool && pool.length > 0) {
-          const isEnemyPool = pool === Peep.DIALOGUE.respond_enemy || pool === Peep.MOOD_POOLS?.taunt?.[this.dialogueMood];
-          const ctx = isEnemyPool ? { enemy: other.name } : { ally: other.name };
-          // Use fragment line for danger warnings, else pool line
-          let line;
-          if (topic === "enemy_spotted" && Math.random() < 0.3) {
-            line = Peep.buildFragmentLine("warn", this.dialogueMood, { target: other.name });
-          } else {
-            line = Peep.randomLine(pool, ctx);
-          }
-          this.shout(line, "social", 2.0);
-          this.startThread(other.id, topic);
-          this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
-        }
-        break;
-      }
-    }
-
-    // --- GOSSIP SYSTEM ---
-
-    observeKill(killer, victim, world) {
-      if (killer === this || victim === this) return;
-      const observeRange = this.profile?.enemyAwareness || CONSTANTS.FOG.DEFAULT_AWARENESS;
-      const dist = Math.hypot(victim.x - this.x, victim.y - this.y);
-      if (dist > observeRange * CONSTANTS.GOSSIP.OBSERVE_RANGE_MULT) return;
-
-      const entry = {
-        type: "saw_kill",
-        subjectId: killer.id,
-        sourceId: this.id,
-        belief: CONSTANTS.GOSSIP.BELIEF_DIRECT,
-        verified: true,
-        timestamp: performance.now(),
-        data: { killerId: killer.id, victimId: victim.id, killerName: killer.name, victimName: victim.name },
-      };
-      this.verifyAndDetectLiars(entry, world);
-      this.addGossipMemory(entry);
-    }
-
-    observeBetrayal(betrayer, victim, world) {
-      if (betrayer === this || victim === this) return;
-      const observeRange = this.profile?.enemyAwareness || CONSTANTS.FOG.DEFAULT_AWARENESS;
-      const dist = Math.hypot(betrayer.x - this.x, betrayer.y - this.y);
-      if (dist > observeRange * CONSTANTS.GOSSIP.OBSERVE_RANGE_MULT) return;
-
-      const entry = {
-        type: "saw_betrayal",
-        subjectId: betrayer.id,
-        sourceId: this.id,
-        belief: CONSTANTS.GOSSIP.BELIEF_DIRECT,
-        verified: true,
-        timestamp: performance.now(),
-        data: { betrayerId: betrayer.id, victimId: victim.id, betrayerName: betrayer.name, victimName: victim.name },
-      };
-      this.verifyAndDetectLiars(entry, world);
-      this.addGossipMemory(entry);
-    }
-
-    verifyAndDetectLiars(verifiedEntry, world) {
-      // Scan existing gossip memories for contradictory entries about the same event
-      const contradictory = this.gossipMemories.filter(m =>
-        !m.verified &&
-        m.sourceId !== this.id &&
-        m.type === verifiedEntry.type &&
-        m.data?.victimId === verifiedEntry.data?.victimId &&
-        m.subjectId !== verifiedEntry.subjectId
-      );
-
-      for (const falseMem of contradictory) {
-        const liarId = falseMem.sourceId;
-        if (this.knownLiars.has(liarId)) continue;
-
-        const liar = world.peeps?.find(p => p.id === liarId);
-        if (!liar) continue;
-
-        // If the liar has low honesty or we already had low trust in them, blacklist permanently
-        const liarTrustworthiness = (liar.stats?.honesty ?? 5) * 10; // 10-100 scale
-        const trustInLiar = this.relationshipWith(liar)?.trust ?? 50;
-        if (liarTrustworthiness < 50 || trustInLiar < 40) {
-          this.knownLiars.add(liarId);
-          // Update existing memories from this liar — collapse their belief
-          this.gossipMemories.forEach(m => {
-            if (m.sourceId === liarId) m.belief = Math.min(m.belief, 0.05);
-          });
-          // Shout about catching the liar
-          if (this.shoutTimer <= 0) {
-            this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_liar, { liar: liar.name }), "social", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
-          }
-        }
-      }
-    }
-
-    addGossipMemory(entry) {
-      // Deduplicate by type+subject+key data
-      const dupIdx = this.gossipMemories.findIndex(m =>
-        m.type === entry.type &&
-        m.subjectId === entry.subjectId &&
-        m.data?.killerId === entry.data?.killerId &&
-        m.data?.victimId === entry.data?.victimId &&
-        m.data?.betrayerId === entry.data?.betrayerId
-      );
-      if (dupIdx !== -1) {
-        // Update belief if new entry is stronger or now verified
-        this.gossipMemories[dupIdx].belief = Math.max(this.gossipMemories[dupIdx].belief, entry.belief);
-        if (entry.verified) this.gossipMemories[dupIdx].verified = true;
-        this.gossipMemories[dupIdx].timestamp = entry.timestamp;
-        return;
-      }
-      this.gossipMemories.unshift(entry);
-      if (this.gossipMemories.length > CONSTANTS.GOSSIP.MAX_ENTRIES) {
-        this.gossipMemories.pop();
-      }
-    }
-
-    updateGossip(world) {
-      if (!this.alive || this.gossipCooldown > 0 || this.shoutTimer > 0) return;
-
-      if (Math.random() > CONSTANTS.GOSSIP.SHARE_CHANCE) return;
-      if (this.gossipMemories.length === 0) return;
-
-      const candidates = world.peeps.filter(p =>
-        p !== this && p.alive &&
-        Math.hypot(p.x - this.x, p.y - this.y) <= CONSTANTS.GOSSIP.VICINITY &&
-        (this.isAlliedWith(p, world) || this.relationshipWith(p).trust > 40)
-      );
-      if (candidates.length === 0) return;
-
-      const listener = candidates[Math.floor(Math.random() * candidates.length)];
-      const memory = this.gossipMemories[Math.floor(Math.random() * this.gossipMemories.length)];
-
-      // Don't share gossip from known liars (even if we heard it before we knew they lied)
-      if (memory.sourceId !== this.id && this.knownLiars.has(memory.sourceId)) return;
-
-      const listenerKnows = listener.gossipMemories?.some(m =>
-        m.type === memory.type &&
-        m.subjectId === memory.subjectId &&
-        m.data?.killerId === memory.data?.killerId &&
-        m.data?.victimId === memory.data?.victimId &&
-        m.belief >= memory.belief - CONSTANTS.GOSSIP.BELIEF_LOSS_PER_HOP
-      );
-      if (listenerKnows) return;
-
-      this.shareGossip(memory, listener, world);
-    }
-
-    shareGossip(memory, listener, world) {
-      // Honesty determines whether we tell the truth
-      const honesty = this.stats?.honesty ?? 5;
-      let payload = { ...memory };
-
-      // Low honesty: may swap the subject to someone we dislike
-      if (honesty < 5 && memory.type === "saw_kill" && Math.random() > honesty / 10) {
-        const enemies = world.peeps.filter(p => p.alive && p !== this && this.relationshipWith(p).anger > 50);
-        if (enemies.length > 0) {
-          const decoy = enemies[Math.floor(Math.random() * enemies.length)];
-          payload = {
-            ...payload,
-            subjectId: decoy.id,
-            data: { ...payload.data, killerId: decoy.id, killerName: decoy.name },
-          };
-        }
-      }
-      if (honesty < 5 && memory.type === "saw_betrayal" && Math.random() > honesty / 10) {
-        const enemies = world.peeps.filter(p => p.alive && p !== this && this.relationshipWith(p).anger > 50);
-        if (enemies.length > 0) {
-          const decoy = enemies[Math.floor(Math.random() * enemies.length)];
-          payload = {
-            ...payload,
-            subjectId: decoy.id,
-            data: { ...payload.data, betrayerId: decoy.id, betrayerName: decoy.name },
-          };
-        }
-      }
-      // Very low honesty: may invent a victim entirely
-      if (honesty < 3 && Math.random() < 0.15) {
-        const victims = world.peeps.filter(p => !p.alive);
-        if (victims.length > 0) {
-          const fakeVictim = victims[Math.floor(Math.random() * victims.length)];
-          const fakeKiller = world.peeps.find(p => p.alive && p !== this);
-          if (fakeKiller) {
-            payload = {
-              type: "saw_kill",
-              subjectId: fakeKiller.id,
-              sourceId: this.id,
-              belief: CONSTANTS.GOSSIP.BELIEF_DIRECT,
-              verified: false,
-              timestamp: performance.now(),
-              data: { killerId: fakeKiller.id, victimId: fakeVictim.id, killerName: fakeKiller.name, victimName: fakeVictim.name },
-            };
-          }
-        }
-      }
-
-      const transmitted = {
-        ...payload,
-        sourceId: this.id,
-        belief: Math.max(0.1, payload.belief - CONSTANTS.GOSSIP.BELIEF_LOSS_PER_HOP),
-        verified: false,
-        timestamp: performance.now(),
-      };
-      listener.receiveGossip(transmitted, this, world);
-
-      if (Math.random() < CONSTANTS.GOSSIP.DIALOGUE_CHANCE) {
-        const ctx = {};
-        if (payload.type === "saw_kill") {
-          ctx.killer = payload.data.killerName;
-          ctx.victim = payload.data.victimName;
-          this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_kill, ctx), "gossip", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
-        } else if (payload.type === "saw_betrayal") {
-          ctx.betrayer = payload.data.betrayerName;
-          ctx.victim = payload.data.victimName;
-          this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_betrayal, ctx), "gossip", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
-        } else {
-          ctx.target = world.peeps.find(p => p.id === payload.subjectId)?.name ?? "someone";
-          this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_danger, ctx), "gossip", CONSTANTS.DIALOGUE.GOSSIP_DURATION);
-        }
-      }
-      this.gossipCooldown = CONSTANTS.GOSSIP.COOLDOWN;
-    }
-
-    receiveGossip(entry, teller, world) {
-      if (this.knownLiars.has(teller.id)) return; // Completely distrust known liars
-
-      // Reduce belief if teller has low honesty and we don't know them well
-      const tellerHonesty = teller.stats?.honesty ?? 5;
-      const trustInTeller = this.relationshipWith(teller)?.trust ?? 30;
-      if (tellerHonesty < 5 && trustInTeller < 60) {
-        entry.belief *= (tellerHonesty / 10);
-      }
-      if (entry.belief < 0.05) return; // Too unreliable to even register
-
-      this.addGossipMemory(entry);
-
-      const weight = entry.belief * (trustInTeller / 100) * CONSTANTS.GOSSIP.EMOTION_MULT;
-      const subject = world.peeps.find(p => p.id === entry.subjectId);
-      if (!subject || subject === this) return;
-
-      const rel = this.relationshipWith(subject);
-      if (entry.type === "saw_kill") {
-        rel.fear = Math.min(100, rel.fear + CONSTANTS.GOSSIP.TRUST_IMPACT_KILL * weight);
-        if (entry.data?.victimId && this.isAlliedWith(world.peeps.find(p => p.id === entry.data.victimId), world)) {
-          rel.anger = Math.min(100, rel.anger + CONSTANTS.GOSSIP.ANGER_IMPACT_BETRAYAL * weight);
-        }
-      } else if (entry.type === "saw_betrayal") {
-        rel.trust = Math.max(0, rel.trust - CONSTANTS.GOSSIP.TRUST_IMPACT_BETRAYAL * weight);
-        rel.fear = Math.min(100, rel.fear + CONSTANTS.GOSSIP.FEAR_IMPACT_KILL * weight);
-      }
-
-      if (Math.random() < CONSTANTS.GOSSIP.ACKNOWLEDGE_CHANCE && this.shoutTimer <= 0 && this.conversationCooldown <= 0) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.gossip_acknowledge), "social", 1.8);
-        this.conversationCooldown = CONSTANTS.DIALOGUE.CONVERSATION_COOLDOWN;
-      }
-    }
-
-    processGossipShout(teller, world) {
-      if (this.knownLiars.has(teller.id)) return; // Ignore everything from known liars
-      if (Math.random() > CONSTANTS.GOSSIP.ACKNOWLEDGE_CHANCE) return;
-      const trustInTeller = this.relationshipWith(teller)?.trust ?? 30;
-      if (trustInTeller < 20) return;
-
-      const tellerHonesty = teller.stats?.honesty ?? 5;
-      // Very low-honesty tellers need higher trust to be believed even at the shout level
-      if (tellerHonesty < 4 && trustInTeller < 50) return;
-
-      for (const mem of teller.gossipMemories || []) {
-        const subjectName = teller.shoutText?.includes(mem.data?.killerName) ? mem.data?.killerName :
-                           teller.shoutText?.includes(mem.data?.betrayerName) ? mem.data?.betrayerName : null;
-        if (!subjectName) continue;
-
-        const alreadyKnows = this.gossipMemories.some(m =>
-          m.type === mem.type &&
-          m.subjectId === mem.subjectId &&
-          m.data?.killerId === mem.data?.killerId &&
-          m.data?.victimId === mem.data?.victimId
-        );
-        if (alreadyKnows) continue;
-
-        const belief = CONSTANTS.GOSSIP.BELIEF_GOSSIP * (trustInTeller / 100) * (tellerHonesty / 10);
-        if (belief < 0.05) continue;
-
-        this.addGossipMemory({
-          type: mem.type,
-          subjectId: mem.subjectId,
-          sourceId: teller.id,
-          belief,
-          verified: false,
-          timestamp: performance.now(),
-          data: mem.data,
-        });
-
-        const subject = world.peeps.find(p => p.id === mem.subjectId);
-        if (subject && subject !== this) {
-          const rel = this.relationshipWith(subject);
-          const weight = belief * CONSTANTS.GOSSIP.EMOTION_MULT;
-          if (mem.type === "saw_kill") {
-            rel.fear = Math.min(100, rel.fear + CONSTANTS.GOSSIP.TRUST_IMPACT_KILL * weight);
-          } else if (mem.type === "saw_betrayal") {
-            rel.trust = Math.max(0, rel.trust - CONSTANTS.GOSSIP.TRUST_IMPACT_BETRAYAL * weight);
-          }
-        }
-        break;
-      }
-    }
-
-    handlePlayerInput(dt, world) {
-      const keys = world.keysPressed || {};
-      const aimAngle = world.aimAngle || 0;
-      const attackQueued = world.attackQueued || false;
-
-      // Always face aim direction
-      this.flip = Math.cos(aimAngle) < 0 ? -1 : 1;
-
-      if (this.state === "attack") {
-        // Attack animation is handled by updateAttack called from the main update branch
-        return;
-      }
-
-      // Movement (WASD / Arrow keys)
-      let mx = 0, my = 0;
-      if (keys["KeyW"] || keys["ArrowUp"]) my -= 1;
-      if (keys["KeyS"] || keys["ArrowDown"]) my += 1;
-      if (keys["KeyA"] || keys["ArrowLeft"]) mx -= 1;
-      if (keys["KeyD"] || keys["ArrowRight"]) mx += 1;
-
-      const len = Math.hypot(mx, my);
-      if (len > 0) {
-        mx /= len;
-        my /= len;
-      }
-
-      const moveSpeed = this.hasWeapon ? CONSTANTS.SPEED.PLAYER_ARMED : CONSTANTS.SPEED.PLAYER_UNARMED;
-      this.applyVelocity(mx * moveSpeed * this.speedMultiplier(), my * moveSpeed * this.speedMultiplier(), dt);
-      this.setState("wander");
-
-      // Attack on click — target enemy nearest to aim ray
-      if (attackQueued) {
-        const attackRange = this.getAttackRange() + 15;
-        const aimX = this.x + Math.cos(aimAngle) * attackRange;
-        const aimY = this.y + Math.sin(aimAngle) * attackRange;
-
-        let bestTarget = null;
-        let bestScore = Infinity;
-        for (const peep of world.peeps) {
-          if (!this.canHarm(peep, world)) continue;
-          const dToAim = Math.hypot(peep.x - aimX, peep.y - aimY);
-          const dToSelf = Math.hypot(peep.x - this.x, peep.y - this.y);
-          if (dToSelf <= attackRange + 15) {
-            const score = dToAim + dToSelf * 0.3;
-            if (score < bestScore) {
-              bestTarget = peep;
-              bestScore = score;
+  _mutateVocab(parentVocab) {
+    const vocab = [];
+    for (const entry of parentVocab) {
+      if (Math.random() < CONSTANTS.LANGUAGE.INHERIT_VOCAB_CHANCE) {
+        const newEntry = { ...entry, tokens: [...entry.tokens] };
+        if (Math.random() < CONSTANTS.LANGUAGE.VOCAB_MUTATE_CHANCE) {
+          // Mutate: flip tokens, add, or remove
+          for (let i = 0; i < newEntry.tokens.length; i++) {
+            if (Math.random() < CONSTANTS.LANGUAGE.VOCAB_MUTATE_TOKEN_FLIP) {
+              newEntry.tokens[i] = Math.floor(Math.random() * CONSTANTS.LANGUAGE.MAX_TOKEN_VALUE);
             }
           }
+          const action = Math.random();
+          if (action < 0.1 && newEntry.tokens.length < CONSTANTS.LANGUAGE.TOKENS_PER_BROADCAST_MAX) {
+            newEntry.tokens.push(Math.floor(Math.random() * CONSTANTS.LANGUAGE.MAX_TOKEN_VALUE));
+          } else if (action < 0.2 && newEntry.tokens.length > 1) {
+            newEntry.tokens.pop();
+          }
         }
-
-        if (bestTarget) {
-          this.attackTarget = bestTarget;
-          this.setState("attack");
-          this.attackTime = 0;
-          this.attackApplied = false;
-        }
+        vocab.push(newEntry);
       }
-
-      // Auto-pickup weapons
-      this.pickUpWeapon(world.groundWeapons);
     }
-
-    static createStats(overrides = {}) {
-      const stats = {};
-      for (const [name, config] of Object.entries(STAT_REGISTRY)) {
-          stats[name] = clampStat(overrides[name] ?? (config.min + Math.floor(Math.random() * (config.max - config.min + 1))));
-      }
-      return stats;
+    // Chance of a new random entry
+    if (Math.random() < 0.15) {
+      vocab.push(this._generateEntryForSituation(this._randomSituation()));
     }
-
-  static createProfile(stats) {
-    const roll = Math.random();
-    const awareness = CONSTANTS.PROFILE.AWARENESS_BASE + stats.eyesight * CONSTANTS.PROFILE.AWARENESS_PER_EYESIGHT;
-    const caution = Math.max(0, CONSTANTS.PROFILE.CAUTION_FORMULA_BASE - stats.aggression);
-    if (roll < CONSTANTS.PROFILE.RUNNER_CHANCE) {
-      return {
-        type: "runner",
-        centerTime: randomRange(0.4, 1.8),
-        enemyAwareness: awareness + 55,
-        huntRangeArmed: 85,
-        huntRangeUnarmed: 0,
-        fleeRangeArmed: 80 + caution * 6,
-        fleeRangeUnarmed: 150 + caution * 12,
-        retreatAfterWeapon: true,
-        retreatDuration: randomRange(2.8, 5.5),
-      };
-    }
-    if (roll < CONSTANTS.PROFILE.SCAVENGER_CHANCE) {
-      return {
-        type: "scavenger",
-        centerTime: randomRange(2.8, 5),
-        enemyAwareness: awareness + 25,
-        huntRangeArmed: 90 + stats.aggression * 8,
-        huntRangeUnarmed: stats.aggression * 5,
-        fleeRangeArmed: 55 + caution * 5,
-        fleeRangeUnarmed: 110 + caution * 9,
-        retreatAfterWeapon: true,
-        retreatDuration: randomRange(1.8, 3.5),
-      };
-    }
-    if (roll < CONSTANTS.PROFILE.WANDERER_CHANCE) {
-      return {
-        type: "wanderer",
-        centerTime: randomRange(0.8, 3.2),
-        enemyAwareness: awareness,
-        huntRangeArmed: 65 + stats.aggression * 7,
-        huntRangeUnarmed: stats.aggression * 4,
-        fleeRangeArmed: 45 + caution * 5,
-        fleeRangeUnarmed: 85 + caution * 8,
-        retreatAfterWeapon: Math.random() < 0.5,
-        retreatDuration: randomRange(1.4, 3),
-      };
-    }
-    if (roll < CONSTANTS.PROFILE.HUNTER_CHANCE) {
-      return {
-        type: "hunter",
-        centerTime: randomRange(3.5, 5),
-        enemyAwareness: awareness + 70,
-        huntRangeArmed: 150 + stats.aggression * 20,
-        huntRangeUnarmed: 55 + stats.aggression * 10,
-        fleeRangeArmed: 35,
-        fleeRangeUnarmed: 90,
-        retreatAfterWeapon: false,
-        retreatDuration: 0,
-      };
-    }
-    return {
-      type: "berserker",
-      centerTime: 5,
-      enemyAwareness: Infinity,
-      huntRangeArmed: Infinity,
-      huntRangeUnarmed: Infinity,
-      fleeRangeArmed: 0,
-      fleeRangeUnarmed: 0,
-      retreatAfterWeapon: false,
-      retreatDuration: 0,
-    };
+    return vocab.slice(0, CONSTANTS.LANGUAGE.MAX_VOCAB);
   }
 
-  initializeRelationships(peeps) {
-    this.relationships.clear();
-    for (const peep of peeps) {
-      if (peep === this) continue;
-      const sameDistrict = peep.district === this.district;
-      this.relationships.set(peep.id, {
-        trust: sameDistrict ? 75 : randomRange(10, 25),
-        fear: 0,
-        anger: 0,
-        bond: sameDistrict ? 70 : randomRange(0, 10),
-        lastSeen: 0,
-        timeNear: 0,
-      });
+  _generateEntryForSituation(situation) {
+    const len = 1 + Math.floor(Math.random() * 2);
+    const tokens = [];
+    for (let j = 0; j < len; j++) {
+      tokens.push(Math.floor(Math.random() * CONSTANTS.LANGUAGE.MAX_TOKEN_VALUE));
     }
+    return { tokens, situation, confidence: 0.3, positive: 1, negative: 0 };
   }
 
-  relationshipWith(other) {
-    if (!other) return null;
-    if (!this.relationships.has(other.id)) {
-      this.relationships.set(other.id, { trust: 15, fear: 0, anger: 0, bond: 0, lastSeen: 0, timeNear: 0 });
-    }
-    return this.relationships.get(other.id);
-  }
-
-  remember(type, actor, weight = 1, extra = {}) {
-    if (!actor || actor === this) return;
-    const memory = {
-      type,
-      actorId: actor.id,
-      actorName: actor.name,
-      time: performance.now(),
-      weight,
-      ...extra,
-    };
-    this.memories.unshift(memory);
-    this.memories = this.memories.slice(0, 12);
-
-    const rel = this.relationshipWith(actor);
-    if (!rel) return;
-    if (type === "attacked_me") {
-      rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_ATTACKED * weight);
-      rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_ATTACKED * weight);
-      rel.fear = Math.min(100, rel.fear + CONSTANTS.ALLIANCE.FEAR_ATTACKED * weight);
-      this.addDangerZone(this.x, this.y, 0.6 + weight * 0.4);
-    } else if (type === "fought_beside_me") {
-      rel.trust = Math.min(100, rel.trust + CONSTANTS.ALLIANCE.TRUST_FOUGHT * weight);
-      rel.bond = Math.min(100, rel.bond + CONSTANTS.ALLIANCE.BOND_FOUGHT * weight);
-    } else if (type === "killed_ally") {
-      rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_KILLED_ALLY * weight);
-      rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_KILLED_ALLY * weight);
-      const allyName = extra.allyName || extra.ally?.name || "my ally";
-      this.addDangerZone(this.x, this.y, 1.0 + weight * 0.4);
-      this.setRevengeTarget(actor, allyName);
-      this.shout(Peep.randomLine(Peep.getMoodPool("vengeance", this.dialogueMood), { killer: actor.name }), "social", 2.2);
-    } else if (type === "betrayed_me") {
-      rel.trust = Math.max(0, rel.trust - CONSTANTS.ALLIANCE.TRUST_BETRAYED * weight);
-      rel.anger = Math.min(100, rel.anger + CONSTANTS.ALLIANCE.ANGER_BETRAYED * weight);
-      rel.bond = Math.max(0, rel.bond - CONSTANTS.ALLIANCE.BOND_BETRAYED * weight);
-      this.addDangerZone(this.x, this.y, 0.9 + weight * 0.3);
-      this.setRevengeTarget(actor, "our alliance");
-    }
-  }
-
-  addDangerZone(x, y, severity = 1) {
-    if (this.dangerZones.length >= CONSTANTS.DANGER_ZONE.MAX_PER_PEEP) {
-      this.dangerZones.shift();
-    }
-    const r = Math.min(
-      CONSTANTS.DANGER_ZONE.MAX_RADIUS,
-      CONSTANTS.DANGER_ZONE.RADIUS_BASE + severity * CONSTANTS.DANGER_ZONE.RADIUS_PER_SEVERITY
+  computeSemanticState() {
+    const need = 1 - (this.hunger / this.maxHunger + this.thirst / this.maxThirst) / 2;
+    const arousal = Math.max(
+      this.drives.fear || 0,
+      this.state === "flee" ? 0.8 : 0,
+      this.state === "hunt" ? 0.6 : 0,
     );
-    this.dangerZones.push({
-      x, y, r,
-      severity,
-      createdAt: performance.now(),
-      expiresAt: performance.now() + CONSTANTS.DANGER_ZONE.LIFETIME * 1000,
+    const valence = this.drives.happiness || 0.5;
+    const social = Math.max(0, Math.min(1, 1 - (this.drives.loneliness || 0.5)));
+    return [need, arousal, valence, social];
+  }
+
+  computeFocus(world) {
+    // Priority: hound (threat) > bush (food if hungry) > water (if thirsty) > creature > none
+    const viewRange = this.getEyesight();
+    const isHungry = this.hunger < CONSTANTS.CREATURE.HUNGER_MAX * 0.45;
+    const isThirsty = this.thirst < CONSTANTS.CREATURE.THIRST_MAX * 0.45;
+
+    // Check for hounds
+    for (const h of world.hounds || []) {
+      if (!h.alive) continue;
+      const d = Math.hypot(h.x - this.x, h.y - this.y);
+      if (d < viewRange) return { type: "hound", id: h.id, x: h.x, y: h.y, state: h.state };
+    }
+
+    // Check for food bush (if hungry)
+    if (isHungry) {
+      let best = null, bestDist = viewRange;
+      for (const bush of world.bushes) {
+        if (bush.food <= 0) continue;
+        const d = Math.hypot(bush.x - this.x, bush.y - this.y);
+        if (d < bestDist) { bestDist = d; best = bush; }
+      }
+      if (best) return { type: "bush", id: best.id || 0, x: best.x, y: best.y, food: best.food };
+    }
+
+    // Check for water (if thirsty)
+    if (isThirsty) {
+      let best = null, bestDist = viewRange;
+      for (const w of world.water) {
+        const d = Math.hypot(w.x - this.x, w.y - this.y);
+        if (d < bestDist) { bestDist = d; best = w; }
+      }
+      if (best) return { type: "water", id: best.id || 0, x: best.x, y: best.y };
+    }
+
+    // Nearby creature
+    let nearestCreature = null, nearestCDist = viewRange;
+    for (const c of world.creatures) {
+      if (c === this || !c.alive) continue;
+      const d = Math.hypot(c.x - this.x, c.y - this.y);
+      if (d < nearestCDist) { nearestCDist = d; nearestCreature = c; }
+    }
+    if (nearestCreature) return { type: "creature", id: nearestCreature.id, x: nearestCreature.x, y: nearestCreature.y, diet: nearestCreature.diet };
+
+    return { type: "none", x: 0, y: 0 };
+  }
+
+  computeUrgency(newState) {
+    let urgency = 0;
+    const oldState = this._lastSemanticState;
+    if (oldState) {
+      const change = Math.abs(newState[0] - oldState[0]) + Math.abs(newState[1] - oldState[1])
+        + Math.abs(newState[2] - oldState[2]) + Math.abs(newState[3] - oldState[3]);
+      urgency += change * 2;
+    }
+    urgency += (this.drives.fear || 0) * 2;
+    urgency += (this.drives.curiosity || 0) * 0.5;
+    urgency += (this.drives.loneliness || 0) * 0.3;
+    const threshold = CONSTANTS.LANGUAGE.URGENCY_THRESHOLD_BASE + (this.getIntel() || 0.5) * CONSTANTS.LANGUAGE.URGENCY_PER_INTEL;
+    return { urgency, threshold };
+  }
+
+  composeSignal(situation, focus) {
+    // Find best-matching vocabulary entry for this situation
+    let best = null, bestConf = 0;
+    for (const entry of this.productionVocab) {
+      if (entry.situation !== situation) continue;
+      if (entry.confidence > bestConf) { bestConf = entry.confidence; best = entry; }
+    }
+    // If no match or low confidence, invent
+    if (!best || bestConf < 0.2) {
+      const len = CONSTANTS.LANGUAGE.TOKENS_PER_BROADCAST_MIN
+        + Math.floor(Math.random() * (CONSTANTS.LANGUAGE.TOKENS_PER_BROADCAST_MAX - CONSTANTS.LANGUAGE.TOKENS_PER_BROADCAST_MIN + 1));
+      const tokens = [];
+      for (let i = 0; i < len; i++) {
+        tokens.push(Math.floor(Math.random() * CONSTANTS.LANGUAGE.MAX_TOKEN_VALUE));
+      }
+      const newEntry = { tokens, situation, confidence: 0.3, positive: 1, negative: 0 };
+      this.productionVocab.push(newEntry);
+      if (this.productionVocab.length > CONSTANTS.LANGUAGE.MAX_VOCAB) this.productionVocab.shift();
+      return tokens;
+    }
+    return best.tokens;
+  }
+
+  broadcast(world) {
+    if (this.signalCooldown > 0) return;
+    const state = this._lastSemanticState || this.computeSemanticState();
+    const focus = this.computeFocus(world);
+    const situation = this._situationFromState(state, focus.type);
+    const tokens = this.composeSignal(situation, focus);
+
+    const signal = {
+      tokens,
+      focus,
+      state,
+      time: performance.now(),
+      origin: { x: this.x, y: this.y },
+      creatureId: this.id,
+    };
+
+    // Send to nearby creatures
+    const range = CONSTANTS.LANGUAGE.SIGNAL_RANGE_BASE + (this.getIntel() || 0.5) * CONSTANTS.LANGUAGE.SIGNAL_RANGE_PER_INTEL;
+    for (const other of world.creatures) {
+      if (other === this || !other.alive) continue;
+      const d = Math.hypot(other.x - this.x, other.y - this.y);
+      if (d < range) other.receiveSignal(signal);
+    }
+
+    this.urgency = 0;
+    this.signalCooldown = CONSTANTS.LANGUAGE.SIGNAL_COOLDOWN;
+    this._lastBroadcastTime = performance.now();
+  }
+
+  receiveSignal(signal) {
+    // Store in episodic memory
+    const ownState = this.computeSemanticState();
+    this.episodicMemory.push({
+      time: performance.now(),
+      signal,
+      ownStateAtHearing: ownState,
     });
+    if (this.episodicMemory.length > CONSTANTS.LANGUAGE.MAX_EPISODIC_MEMORY) {
+      this.episodicMemory.shift();
+    }
+
+    // Store for temporal inference
+    this._pendingInferences.push({
+      time: performance.now(),
+      tokens: signal.tokens,
+      signalOrigin: signal.origin,
+      focusType: signal.focus?.type,
+    });
+    if (this._pendingInferences.length > 50) this._pendingInferences.shift();
   }
 
-  updateDangerZones() {
+  processLanguageInference(eventOutcome, world) {
+    // On significant event, look back at recent signals and learn associations
     const now = performance.now();
-    this.dangerZones = this.dangerZones.filter(z => z.expiresAt > now);
-  }
+    const window = CONSTANTS.LANGUAGE.INFERENCE_WINDOW * 1000;
+    const recent = this._pendingInferences.filter(p => now - p.time < window);
+    if (recent.length === 0) return;
 
-  dangerZonePenalty(x, y) {
-    const now = performance.now();
-    let pushX = 0, pushY = 0;
-    for (const z of this.dangerZones) {
-      const dx = x - z.x;
-      const dy = y - z.y;
-      const d = Math.hypot(dx, dy) || 1;
-      const lifeFrac = Math.max(0, (z.expiresAt - now) / (CONSTANTS.DANGER_ZONE.LIFETIME * 1000));
-      if (d < z.r) {
-        const strength = (1 - d / z.r) * z.severity * lifeFrac;
-        pushX += (dx / d) * strength;
-        pushY += (dy / d) * strength;
+    const situation = this._situationFromState(this.computeSemanticState(), this.focus?.type || "none");
+
+    for (const p of recent) {
+      const key = p.tokens.join(",");
+      // Update Bayesian confidence
+      let found = false;
+      for (const entry of this.productionVocab) {
+        if (entry.tokens.join(",") === key) {
+          if (eventOutcome === "positive") entry.positive++;
+          else entry.negative++;
+          entry.confidence = entry.positive / (entry.positive + entry.negative + CONSTANTS.LANGUAGE.BAYES_PSEUDOCOUNT);
+          entry.situation = situation; // Update situation association
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // New learned association
+        this.productionVocab.push({
+          tokens: [...p.tokens],
+          situation,
+          confidence: 0.3,
+          positive: eventOutcome === "positive" ? 1 : 0,
+          negative: eventOutcome === "positive" ? 0 : 1,
+        });
+        if (this.productionVocab.length > CONSTANTS.LANGUAGE.MAX_VOCAB) this.productionVocab.shift();
       }
     }
-    return { x: pushX, y: pushY };
+
+    // Keep high-confidence entries, prune low-confidence
+    this.productionVocab = this.productionVocab.filter(e => e.confidence > 0.05 || e.positive + e.negative > 3);
   }
 
-  setRevengeTarget(actor, contextLabel) {
-    if (!actor || !actor.alive) return;
-    if (this.revengeCooldown > 0) return;
-    this.revengeTargetId = actor.id;
-    this.revengeExpiresAt = performance.now() + CONSTANTS.REVENGE.DURATION * 1000;
-    this.revengeContext = contextLabel;
-  }
-
-  acquireRevengeTarget(world) {
-    if (this.revengeCooldown > 0) return null;
-    if (!this.revengeTargetId) return null;
-    if (performance.now() > this.revengeExpiresAt) {
-      this.revengeTargetId = null;
-      this.revengeCooldown = CONSTANTS.REVENGE.COOLDOWN * 0.5;
-      return null;
-    }
-    const target = world.peeps.find(p => p.id === this.revengeTargetId);
-    if (!target || !target.alive) {
-      this.revengeTargetId = null;
-      this.revengeCooldown = CONSTANTS.REVENGE.COOLDOWN * 0.5;
-      return null;
-    }
-    const dist = Math.hypot(target.x - this.x, target.y - this.y);
-    const vision = (this.profile?.enemyAwareness || 200) * CONSTANTS.REVENGE.EYESIGHT_MULT;
-    if (dist > vision) return null;
-    return { target, dist };
-  }
-
-
-  equipWeapon(type) {
-    this.weapon = type;
-    this.hasWeapon = true;
-    // Always reset ranged timers so old weapon state never leaks
-    this.laserPhase = "idle";
-    this.laserCooldown = 0;
-    this.laserDuration = 0;
-    this.laserWindUp = 0;
-    if (this.profile && this.profile.retreatAfterWeapon) {
-      this.retreatAngle = Math.atan2(this.y - this.centerY, this.x - this.centerX) + randomRange(-0.5, 0.5);
-      this.setState("retreat");
-    }
-  }
-
-  canStartAttack() {
-    const w = WEAPON_REGISTRY[this.weapon];
-    if (!w?.ranged) return true;
-    return this.laserPhase === "idle" && this.laserCooldown <= 0;
-  }
-
-  isAlliedWith(other, world) {
-    if (!other || other === this) return false;
-    return Boolean(world?.areAllied?.(this, other));
-  }
-
-  canHarm(other, world) {
-    return other && other.alive && other !== this && !this.isAlliedWith(other, world);
-  }
-
-  findNearestEnemy(peeps, world, range = Infinity) {
-    let nearest = null;
-    let nearestDist = range;
-    let nearestScore = -Infinity;
+  _evaluateSignals(world) {
     const now = performance.now();
-    for (const peep of peeps) {
-      if (!this.canHarm(peep, world)) continue;
-      const dist = Math.hypot(peep.x - this.x, peep.y - this.y);
-      const detectionDist = dist / (peep.stealthModifier || 1);
-      if (detectionDist > range) continue;
-      const rel = this.relationshipWith(peep);
-      const weaponThreat = peep.hasWeapon ? 18 : 0;
-      const weakTarget = (peep.maxHealth - peep.health) * 7;
-      const revengeBonus = (this.revengeTargetId === peep.id && now < this.revengeExpiresAt) ? CONSTANTS.REVENGE.PRIORITY_SCORE : 0;
-      const cunningOpportunism = this.stats.cunning * 3 * (peep.health < peep.maxHealth ? 1.4 : 1);
-      const danger = this.dangerZonePenalty(peep.x, peep.y);
-      const dangerPenalty = (Math.abs(danger.x) + Math.abs(danger.y)) * CONSTANTS.DANGER_ZONE.ENEMY_ROUTE_PENALTY * 0.05;
-      const score = 120 - detectionDist * 0.25 + rel.anger * 1.2 - rel.fear * 0.35 + weaponThreat + weakTarget + this.stats.aggression * 4 + revengeBonus + cunningOpportunism - dangerPenalty;
-      if (score > nearestScore) {
-        nearest = peep;
-        nearestDist = dist;
-        nearestScore = score;
-      }
-    }
-    return { target: nearest, dist: nearestDist };
-  }
+    const recentWindow = CONSTANTS.LANGUAGE.INFERENCE_WINDOW * 1000;
+    const isHungry = this.hunger < CONSTANTS.CREATURE.HUNGER_MAX * 0.45;
+    const isThirsty = this.thirst < CONSTANTS.CREATURE.THIRST_MAX * 0.45;
+    if (!isHungry && !isThirsty) return null;
 
-  takeDamage(amount, killer) {
-    if (!this.alive) return 0;
-    const reducedAmount = amount * (1 - this.damageReduction);
-    const finalAmount = Math.max(0.5, reducedAmount - this.armor);
-    this.health -= finalAmount;
-    this.hitFlash = CONSTANTS.PEEP.HIT_FLASH_DURATION;
-    if (this.health <= 0) {
-      this._deathBy = killer || null;
-      this.alive = false;
-      if (killer) {
-        killer.kills += 1;
-        if (killer.healOnKill) {
-          killer.health = Math.min(killer.maxHealth, killer.health + killer.healOnKill);
+    let best = null, bestConf = 0;
+    for (const ep of this.episodicMemory) {
+      if (now - ep.time > recentWindow) continue;
+      const sigTokens = ep.signal.tokens.join(",");
+      for (const entry of this.productionVocab) {
+        if (entry.tokens.join(",") !== sigTokens) continue;
+        if (entry.positive > entry.negative && entry.confidence > 0.4 && entry.confidence > bestConf) {
+          const d = Math.hypot(ep.signal.origin.x - this.x, ep.signal.origin.y - this.y);
+          if (d < 500) { bestConf = entry.confidence; best = ep.signal; }
         }
       }
     }
-    return finalAmount;
+    if (best) return { x: best.origin.x, y: best.origin.y };
+    return null;
   }
 
-  die() {
-    const weaponConfig = WEAPON_REGISTRY[this.weapon];
-    const canDrop = weaponConfig ? weaponConfig.droppable : true;
+  // === REASONING SYSTEM ===
 
+  _getBestMemory() {
+    const isHungry = this.hunger < this.maxHunger * 0.45;
+    const isThirsty = this.thirst < this.maxThirst * 0.45;
+    if (!isHungry && !isThirsty) return null;
+    const memBush = isHungry ? this.recall("bush") : null;
+    const memWater = isThirsty ? this.recall("water") : null;
+    if (!memBush && !memWater) return null;
+    if (memWater && (!memBush || memWater.confidence > memBush.confidence)) return memWater;
+    return memBush;
+  }
+
+  _buildOptions(world, signalTarget) {
+    const o = [];
+    if (this.threat) o.push(this._optFlee());
+    if (this.huntTarget) o.push(this._optHunt());
+    if (this.nearestWater) o.push(this._optDrink());
+    if (this.nearestBush && this.nearestBush.food > 0 && (this.diet === "herbivore" || this.diet === "omnivore"))
+      o.push(this._optEat());
+    if (this.followTarget) o.push(this._optFollow());
+    const memTarget = this._getBestMemory();
+    if (memTarget) o.push(this._optRecall(memTarget));
+    if (signalTarget) o.push(this._optSignal(signalTarget));
+    if (this.mateTarget && this.reproductionCooldown <= 0 && this.age >= CONSTANTS.CREATURE.MATURITY_AGE && this.hunger > this.maxHunger * 0.5)
+      o.push(this._optMate());
+    if (this.exploreTarget && Math.hypot(this.exploreTarget.x - this.x, this.exploreTarget.y - this.y) > 60)
+      o.push(this._optExplore());
+    o.push(this._optExploreNew(world));
+    o.push(this._optWander());
+    return o;
+  }
+
+  _reason(world, dt, signalTarget) {
+    const intel = this.genome.intelligence;
+    const noiseRange = 0.5 - intel * 0.22;
+
+    let options = this._buildOptions(world, signalTarget);
+
+    for (const opt of options) {
+      opt.score += (Math.random() - 0.5) * noiseRange;
+    }
+
+    options.sort((a, b) => b.score - a.score);
+    return options[0];
+  }
+
+  // === SCORING + EXECUTION ===
+
+  _optFlee() {
+    const d = Math.hypot(this.threat.x - this.x, this.threat.y - this.y);
+    const viewRange = this.getEyesight();
+    const proximity = 1 - d / viewRange;
+    let score = proximity * this.genome.fearWeight * 2;
+    score += this.drives.fear * this.genome.fearWeight * 0.7;
+    score += this.diet === "herbivore" ? this.genome.fearWeight * 0.5 : 0;
+    const threatStrength = this.threat.genome?.strength || this.threat.damage || 2;
+    const relStrength = this.genome.strength / threatStrength;
+    const riskMod = Math.max(0, 1.5 - relStrength * 2) * (1 + (1 - this.genome.riskTolerance) * 0.5);
+    score += riskMod;
+    const speedBonus = CONSTANTS.SPEED.FLEE * this.genome.speed * (1 + this.drives.fear * 0.2);
     return {
-      id: this.id,
-      name: this.name,
-      district: this.district,
-      x: this.x,
-      y: this.y,
-      weapon: canDrop ? this.weapon : null,
-      side: this.bodyFrame,
-      kills: this.kills,
-      killedBy: this._deathBy,
+      name: "flee", score,
+      execute: (dt) => this.moveAwayFrom(this.threat.x, this.threat.y, speedBonus, dt),
     };
+  }
+
+  _optHunt() {
+    let score = 0;
+    const hungerDeficit = 1 - this.hunger / this.maxHunger;
+    score += hungerDeficit * this.genome.hungerWeight * 1.2;
+    score += this.drives.aggression * this.genome.aggressionBias * 1.2;
+    if (this.diet === "carnivore") score += this.genome.aggressionBias * 0.8;
+    else if (this.hunger < 20) score += 0.5;
+    else score -= this.genome.riskTolerance * 0.5;
+    const huntSpeed = CONSTANTS.SPEED.FLEE * this.genome.speed * 0.9 * (1 + this.drives.aggression * 0.15);
+    return {
+      name: "hunt", score,
+      execute: (dt, world) => {
+        const dist = Math.hypot(this.huntTarget.x - this.x, this.huntTarget.y - this.y);
+        if (dist < CONSTANTS.HUNT.ATTACK_RANGE) this.attack(this.huntTarget, world);
+        else this.moveToward(this.huntTarget.x, this.huntTarget.y, huntSpeed, dt);
+      },
+    };
+  }
+
+  _optDrink() {
+    const thirstDeficit = 1 - this.thirst / this.maxThirst;
+    let score = thirstDeficit * this.genome.thirstWeight * 1.3;
+    const d = Math.hypot(this.nearestWater.x - this.x, this.nearestWater.y - this.y);
+    score += (1 - d / this.getEyesight()) * 0.5;
+    return {
+      name: "drink", score,
+      execute: (dt) => this.moveToward(this.nearestWater.x, this.nearestWater.y, this.getSpeed(), dt),
+    };
+  }
+
+  _optEat() {
+    const hungerDeficit = 1 - this.hunger / this.maxHunger;
+    let score = hungerDeficit * this.genome.hungerWeight * 1.3;
+    const d = Math.hypot(this.nearestBush.x - this.x, this.nearestBush.y - this.y);
+    score += (1 - d / this.getEyesight()) * 0.5;
+    if (this.threat) score -= (1 - this.genome.riskTolerance * 0.7) * 1.5;
+    return {
+      name: "eat", score,
+      execute: (dt) => this.moveToward(this.nearestBush.x, this.nearestBush.y, this.getSpeed(), dt),
+    };
+  }
+
+  _optFollow() {
+    let score = this.genome.socialPull * 0.3;
+    score += (1 - this.drives.loneliness) * this.genome.socialPull * 0.3;
+    score += this.genome.intelligence * 0.15;
+    return {
+      name: "follow", score,
+      execute: (dt) => {
+        this._followCooldown = 5;
+        this.moveToward(this.followTarget.x, this.followTarget.y, this.getSpeed() * CONSTANTS.SOCIAL.FOLLOW_SPEED_BONUS, dt);
+      },
+    };
+  }
+
+  _optRecall(memTarget) {
+    let score = 0.2;
+    score += memTarget.confidence * this.genome.memoryTrust * 1.2;
+    score += this.genome.intelligence * 0.2;
+    const d = Math.hypot(memTarget.x - this.x, memTarget.y - this.y);
+    score += (1 - Math.min(1, d / 500)) * 0.3;
+    return {
+      name: "recall", score,
+      execute: (dt, world) => {
+        this.moveToward(memTarget.x, memTarget.y, this.getSpeed(), dt);
+        const dist = Math.hypot(memTarget.x - this.x, memTarget.y - this.y);
+        if (dist < CONSTANTS.MEMORY.CONFIRM_RANGE) this.confirmMemory(memTarget.type, memTarget.x, memTarget.y, world);
+      },
+    };
+  }
+
+  _optSignal(signalTarget) {
+    let score = this.genome.signalTrust * 0.2;
+    score += this.genome.intelligence * 0.2;
+    const isHungry = this.hunger < this.maxHunger * 0.45;
+    const isThirsty = this.thirst < this.maxThirst * 0.45;
+    if (!isHungry && !isThirsty) score -= this.genome.signalTrust * 0.3;
+    return {
+      name: "signal", score,
+      execute: (dt) => this.moveToward(signalTarget.x, signalTarget.y, this.getSpeed(), dt),
+    };
+  }
+
+  _optMate() {
+    let score = this.drives.loneliness * this.genome.mateWeight * 1.2;
+    score += this.genome.fertility * 0.3;
+    return {
+      name: "mate", score,
+      execute: (dt, world) => {
+        const d = Math.hypot(this.mateTarget.x - this.x, this.mateTarget.y - this.y);
+        const rangeMult = 1 + this.drives.loneliness * 0.3;
+        if (d < CONSTANTS.CREATURE.REPRODUCTION_RANGE * rangeMult) this.reproduce(this.mateTarget, world);
+        else this.moveToward(this.mateTarget.x, this.mateTarget.y, CONSTANTS.SPEED.MATE_SEEK * this.genome.speed * (1 + this.drives.loneliness * 0.2), dt);
+      },
+    };
+  }
+
+  _optExplore() {
+    let score = this.genome.exploreWeight * 0.3;
+    score += this.drives.curiosity * this.genome.exploreWeight * 0.6;
+    const hungerDeficit = 1 - this.hunger / this.maxHunger;
+    const thirstDeficit = 1 - this.thirst / this.maxThirst;
+    if (hungerDeficit < 0.3 && thirstDeficit < 0.3) score += this.genome.exploreWeight * 0.3;
+    return {
+      name: "explore", score,
+      execute: (dt) => this.moveToward(this.exploreTarget.x, this.exploreTarget.y, this.getSpeed() * 0.9, dt),
+    };
+  }
+
+  _optExploreNew(world) {
+    let score = this.genome.exploreWeight * 0.15;
+    score += this.drives.curiosity * this.genome.exploreWeight * 0.4;
+    return {
+      name: "explore_new", score,
+      execute: (dt) => {
+        this.pickExploreTarget(world);
+        this.wander(dt);
+      },
+    };
+  }
+
+  _optWander() {
+    return {
+      name: "wander", score: 0.05,
+      execute: (dt) => this.wander(dt),
+    };
+  }
+
+  // === GENETICS V2 ===
+
+  static createAlleles(genomeOverrides, parentAlleles) {
+    const alleles = {};
+    for (const [name, range] of Object.entries(GENOME_REGISTRY)) {
+      if (parentAlleles) {
+        // Offspring: one allele from each parent
+        const a = parentAlleles[0]?.[name] ?? (range.min + Math.random() * (range.max - range.min));
+        const b = parentAlleles[1]?.[name] ?? (range.min + Math.random() * (range.max - range.min));
+        alleles[name] = [a, b];
+      } else if (genomeOverrides?.[name] != null) {
+        // Setup slider: both alleles set to override value
+        const v = genomeOverrides[name];
+        // Add slight natural variation
+        const spread = (range.max - range.min) * 0.02;
+        alleles[name] = [
+          Math.max(range.min, Math.min(range.max, v + (Math.random() - 0.5) * spread)),
+          Math.max(range.min, Math.min(range.max, v + (Math.random() - 0.5) * spread)),
+        ];
+      } else {
+        // New creature: random alleles
+        const v1 = range.min + Math.random() * (range.max - range.min);
+        const v2 = range.min + Math.random() * (range.max - range.min);
+        alleles[name] = [v1, v2];
+      }
+      // Mutate a random allele
+      if (Math.random() < CONSTANTS.GENETICS.MUTATION_RATE) {
+        const idx = Math.random() < 0.5 ? 0 : 1;
+        const delta = (Math.random() - 0.5) * 2 * CONSTANTS.GENETICS.MUTATION_MAGNITUDE * (range.max - range.min);
+        alleles[name][idx] = Math.max(range.min, Math.min(range.max, alleles[name][idx] + delta));
+      }
+    }
+    return alleles;
+  }
+
+  static expressGenome(alleles) {
+    const genome = {};
+    for (const [name, [a, b]] of Object.entries(alleles)) {
+      const dominant = Math.max(a, b);
+      const recessive = Math.min(a, b);
+      genome[name] = dominant * CONSTANTS.GENETICS.DOMINANCE_WEIGHT + recessive * (1 - CONSTANTS.GENETICS.DOMINANCE_WEIGHT);
+    }
+    return genome;
+  }
+
+  static inheritAlleles(parentA, parentB) {
+    const allelesA = {}, allelesB = {};
+    for (const name of Object.keys(GENOME_REGISTRY)) {
+      // Pick one random allele from each parent
+      allelesA[name] = parentA.alleles[name][Math.random() < 0.5 ? 0 : 1];
+      allelesB[name] = parentB.alleles[name][Math.random() < 0.5 ? 0 : 1];
+    }
+    return [allelesA, allelesB];
+  }
+
+  // === INTELLIGENCE V2 ===
+
+  getIntel() {
+    return this.genome.intelligence;
+  }
+
+  getMaxMemories() {
+    return CONSTANTS.MEMORY.BASE_MAX + Math.floor(this.getIntel() * CONSTANTS.MEMORY.MAX_PER_INTEL);
+  }
+
+  getMemoryDuration() {
+    return CONSTANTS.MEMORY.BASE_DURATION + this.getIntel() * CONSTANTS.MEMORY.DURATION_PER_INTEL;
+  }
+
+  getMemoryFuzz() {
+    return Math.max(20, CONSTANTS.MEMORY.FUZZ_BASE + this.getIntel() * CONSTANTS.MEMORY.FUZZ_PER_INTEL);
+  }
+
+  remember(type, x, y, confidence = 1) {
+    const now = performance.now();
+    this.memories = this.memories.filter(m => now - m.createdAt < this.getMemoryDuration() * 1000);
+    if (this.memories.length >= this.getMaxMemories()) this.memories.shift();
+    const fuzzX = x + (Math.random() - 0.5) * this.getMemoryFuzz();
+    const fuzzY = y + (Math.random() - 0.5) * this.getMemoryFuzz();
+    this.memories.push({ type, x: fuzzX, y: fuzzY, confidence, createdAt: now });
+  }
+
+  recall(type) {
+    const now = performance.now();
+    let best = null, bestScore = -Infinity;
+    for (const m of this.memories) {
+      if (m.type !== type) continue;
+      const age = (now - m.createdAt) / 1000;
+      const score = m.confidence - age * CONSTANTS.MEMORY.CONFIDENCE_DECAY;
+      if (score > bestScore) { bestScore = score; best = m; }
+    }
+    return best;
+  }
+
+  pickExploreTarget(world) {
+    const range = CONSTANTS.EXPLORATION.EXPLORE_RANGE * (0.5 + this.getIntel() * 0.5);
+    const angle = Math.random() * Math.PI * 2;
+    this.exploreTarget = {
+      x: this.x + Math.cos(angle) * range * (0.5 + Math.random() * 0.5),
+      y: this.y + Math.sin(angle) * range * (0.5 + Math.random() * 0.5),
+    };
+  }
+
+  findFollowTarget(world) {
+    if (this._followCooldown > 0) return null;
+    if (this.getIntel() < 0.8) return null;
+    if (Math.random() > CONSTANTS.SOCIAL.FOLLOW_CHANCE * this.getIntel()) return null;
+
+    // Only follow if we're seeking resources
+    const isHungry = this.hunger < CONSTANTS.CREATURE.HUNGER_MAX * 0.45;
+    const isThirsty = this.thirst < CONSTANTS.CREATURE.THIRST_MAX * 0.45;
+    if (!isHungry && !isThirsty) return null;
+
+    for (const other of world.creatures) {
+      if (other === this || !other.alive) continue;
+      if (other.diet !== this.diet) continue;
+      const d = Math.hypot(other.x - this.x, other.y - this.y);
+      if (d > CONSTANTS.SOCIAL.FOLLOW_RANGE) continue;
+      if (other.state === "wander" && !other.nearestBush && !other.nearestWater) continue;
+      const headingToResource = (isHungry && other.nearestBush) || (isThirsty && other.nearestWater);
+      if (headingToResource) return other;
+    }
+    return null;
+  }
+
+  // === CUSTOM TRAITS ===
+
+  checkTraitDiscovery(dt) {
+    this._lastDiscoveryCheck += dt;
+    if (this._lastDiscoveryCheck < CONSTANTS.TRAIT_DISCOVERY.CHECK_INTERVAL) return;
+    this._lastDiscoveryCheck = 0;
+
+    if (this.customTraits.length >= CONSTANTS.TRAIT_DISCOVERY.MAX_TRAITS) return;
+
+    const knownKeys = new Set(this.customTraits);
+    for (const [key, traitDef] of Object.entries(CONSTANTS.CUSTOM_TRAIT_LIBRARY)) {
+      if (knownKeys.has(key)) continue;
+      const disc = traitDef.discover;
+      const exp = this.exposure[disc.exposure];
+      if (exp == null) continue;
+
+      let qualifies = false;
+      if (disc.minTimes != null) qualifies = exp >= disc.minTimes;
+      else if (disc.minDuration != null) qualifies = exp >= disc.minDuration;
+      else if (disc.minCount != null && disc.duration != null) qualifies = exp >= disc.duration;
+      else if (disc.minDistance != null) qualifies = exp >= disc.minDistance;
+
+      if (qualifies && Math.random() < disc.chance) {
+        this.customTraits.push(key);
+        // Apply trait effect to expressed genome
+        for (const [stat, delta] of Object.entries(traitDef.effect)) {
+          const range = GENOME_REGISTRY[stat];
+          if (range) {
+            this.genome[stat] = Math.max(range.min, Math.min(range.max, this.genome[stat] + delta));
+          }
+        }
+        return;
+      }
+    }
+  }
+
+  // === DRIVES ===
+
+  updateDrives(dt, world) {
+    const decay = CONSTANTS.DRIVES.DECAY_RATE;
+    const BL = CONSTANTS.DRIVES.BASELINE;
+    const boosts = CONSTANTS.DRIVES.BOOSTS;
+
+    for (const key of Object.keys(this.drives)) {
+      this.drives[key] += (BL[key] - this.drives[key]) * decay * dt;
+    }
+
+    // Curiosity: exploring and creating new memories
+    if (this.exploreTarget) {
+      this.drives.curiosity += boosts.curiosity.explore * dt;
+    }
+
+    // Happiness: hunger/thirst/health state
+    if (this.hunger > this.maxHunger * 0.8) this.drives.happiness += boosts.happiness.eat * dt;
+    if (this.hunger < this.maxHunger * 0.2) this.drives.happiness += boosts.happiness.starve * dt;
+    if (this.thirst < this.maxThirst * 0.2) this.drives.happiness += boosts.happiness.starve * dt * 0.5;
+
+    // Fear: threats
+    const hadThreat = this._lastDriveThreat;
+    if (hadThreat) this.drives.fear += boosts.fear.threat_seen * dt;
+    else this.drives.fear += boosts.fear.safe_period * dt;
+
+    // Loneliness: nearby allies
+    let nearAlly = false;
+    for (const other of world.creatures) {
+      if (other === this || !other.alive) continue;
+      if (Math.hypot(other.x - this.x, other.y - this.y) < 150) {
+        if (other.diet === this.diet) nearAlly = true;
+        break;
+      }
+    }
+    if (nearAlly) this.drives.loneliness += boosts.loneliness.near_ally * dt;
+    else this.drives.loneliness += boosts.loneliness.isolated * dt;
+
+    // Aggression: attacks
+    if (this.attackTimer > 0 || this.state === "hunt") {
+      this.drives.aggression += boosts.aggression.hunt_success * dt;
+    }
+
+    // Clamp all drives
+    for (const key of Object.keys(this.drives)) {
+      this.drives[key] = Math.max(0, Math.min(1, this.drives[key]));
+    }
+  }
+
+  getDriveEffect(drive) {
+    const v = this.drives[drive] || 0;
+    const eff = CONSTANTS.DRIVES.EFFECTS[drive];
+    return eff || {};
+  }
+
+  // === OUTCOME-BASED LEARNING ===
+
+  confirmMemory(type, x, y, world) {
+    const range = CONSTANTS.MEMORY.CONFIRM_RANGE;
+    const boost = CONSTANTS.MEMORY.OUTCOME_CONFIRM_BOOST;
+    const depletedPen = CONSTANTS.MEMORY.OUTCOME_DEPLETED_PENALTY;
+    const missingPen = CONSTANTS.MEMORY.OUTCOME_MISSING_PENALTY;
+
+    if (type === "bush") {
+      const bush = world.bushes.find(b => Math.hypot(b.x - x, b.y - y) < range);
+      if (bush) {
+        if (bush.food > 0) this.adjustMemory("bush", x, y, boost);
+        else this.adjustMemory("bush", x, y, depletedPen);
+      } else {
+        this.adjustMemory("bush", x, y, missingPen);
+      }
+    } else if (type === "water") {
+      const water = world.water.find(w => Math.hypot(w.x - x, w.y - y) < range);
+      if (water) this.adjustMemory("water", x, y, boost);
+      else this.adjustMemory("water", x, y, missingPen);
+    } else if (type === "threat") {
+      // Confirming a threat: if a creature is still there, boost; if not, big penalty
+      const stillThreat = world.creatures.some(c =>
+        c !== this && c.alive && c.genome.strength > this.genome.strength * 1.3 &&
+        Math.hypot(c.x - x, c.y - y) < range
+      );
+      if (stillThreat) this.adjustMemory("threat", x, y, boost);
+      else this.adjustMemory("threat", x, y, missingPen);
+    }
+  }
+
+  adjustMemory(type, x, y, delta) {
+    let best = null, bestDist = Infinity;
+    for (const m of this.memories) {
+      if (m.type !== type) continue;
+      const d = Math.hypot(m.x - x, m.y - y);
+      if (d < bestDist) { bestDist = d; best = m; }
+    }
+    if (best) {
+      best.confidence = Math.max(0, Math.min(1, best.confidence + delta));
+    }
+  }
+
+  // === BEHAVIOR ===
+
+  getSpeed() {
+    return CONSTANTS.SPEED.WANDER * this.genome.speed;
+  }
+
+  getEyesight() {
+    return 120 + this.genome.eyesight * 80;
+  }
+
+  getHungerDrainMultiplier() {
+    let mult = 1;
+    mult += (this.genome.size - 1) * 0.6;
+    mult += (this.genome.strength - 1) * 0.3;
+    mult += (this.genome.eyesight - 1) * 0.2;
+    mult += (this.getIntel() - 1) * 0.25;
+    mult += (this.genome.metabolism - 1) * 0.5;
+    return Math.max(0.3, mult);
+  }
+
+  getThirstDrainMultiplier() {
+    let mult = 1;
+    mult += (this.genome.size - 1) * 0.5;
+    mult += (this.genome.speed - 1) * 0.2;
+    return Math.max(0.3, mult);
   }
 
   update(dt, world) {
     if (!this.alive) return;
-    this.hitFlash = Math.max(0, this.hitFlash - dt);
-    this.betrayalCooldown = Math.max(0, this.betrayalCooldown - dt);
-    this.laserCooldown = Math.max(0, this.laserCooldown - dt);
-    this.laserDuration = Math.max(0, this.laserDuration - dt);
-    this.laserWindUp = Math.max(0, this.laserWindUp - dt);
+
+    this.age += dt;
     this.stateTime += dt;
-    this.commandTimer = Math.max(0, this.commandTimer - dt);
-    this.conversationCooldown = Math.max(0, this.conversationCooldown - dt);
-    this.shoutTimer = Math.max(0, this.shoutTimer - dt);
-    this.gossipCooldown = Math.max(0, this.gossipCooldown - dt);
-    this.revengeCooldown = Math.max(0, this.revengeCooldown - dt);
-    this.baitCooldown = Math.max(0, this.baitCooldown - dt);
-    this.casualChatCooldown = Math.max(0, this.casualChatCooldown - dt);
-    this.lastCombatBarkAt = Math.max(0, this.lastCombatBarkAt - dt);
+    this.reproductionCooldown = Math.max(0, this.reproductionCooldown - dt);
+    this.attackTimer = Math.max(0, this.attackTimer - dt);
+    this._followCooldown = Math.max(0, this._followCooldown - dt);
+    this.hop += dt * (1 + this.genome.speed * 0.5);
 
-    if (this._pendingCasualResponse && performance.now() >= this._pendingCasualResponse) {
-      this._pendingCasualResponse = 0;
-      if (this.shoutTimer <= 0 && this.conversationCooldown <= 0) {
-        this.shout(Peep.randomLine(Peep.DIALOGUE.casual_chat_response), "social", CONSTANTS.CASUAL_CHAT.DURATION);
-        this.casualChatCooldown = CONSTANTS.CASUAL_CHAT.COOLDOWN * 0.7;
-      }
-    }
+    // Track distance for explorer trait
+    this.totalDistanceTraveled += Math.hypot(this.vx, this.vy) * dt * 60;
+    this.exposure.far_travel = this.totalDistanceTraveled;
 
-    this.updateStamina(dt);
-    this.updateDangerZones();
+    // Resource drain
+    const moveSpeed = Math.hypot(this.vx, this.vy);
+    let drainCategory = moveSpeed > 0.5 ? "WANDER" : "IDLE";
+    if (this.state === "flee") drainCategory = "FLEE";
 
-    const _alliance = world.getAlliance?.(this.allianceId);
-    if (_alliance?.posture) this.posture = _alliance.posture;
-    else this.posture = 'defensive';
+    const hungerDrain = CONSTANTS.RESOURCE_DRAIN[`HUNGER_${drainCategory}`] * this.getHungerDrainMultiplier();
+    const thirstDrain = CONSTANTS.RESOURCE_DRAIN[`THIRST_${drainCategory}`] * this.getThirstDrainMultiplier();
 
-    // Mood, thread, and environmental awareness
-    this.updateMood(dt, world);
-    this.updateThreads(dt);
-    this.environmentalShout(world);
-    this.considerCasualChat(world);
+    this.hunger -= hungerDrain * dt;
+    this.thirst -= thirstDrain * dt;
 
-    if (this.baitExpiresAt > 0 && performance.now() > this.baitExpiresAt) {
-      this.baitPosition = null;
-      this.baitExpiresAt = 0;
-      this.baitCooldown = CONSTANTS.BAIT.COOLDOWN;
-    }
+    // Exposure tracking
+    this.exposure.starving = this.hunger < 10 ? this.exposure.starving + dt : 0;
 
-    if (this.loverMournTimer > 0) {
-      this.loverMournTimer -= dt;
-      if (this.loverMournTimer <= 0) {
-        this.loverId = null;
-        this.isLoverDead = false;
-      }
-    }
-
-    if (this.regeneration > 0 && this.health < this.maxHealth) {
-      this.health = Math.min(this.maxHealth, this.health + this.regeneration * dt);
-    }
-
-    if (this.isPlayerControlled) {
-      this.handlePlayerInput(dt, world);
-      if (this.state === "attack") this.updateAttack(dt, world);
-      this.animate(Math.hypot(this.vx, this.vy), dt);
-      this.x += this.vx * dt * 60;
-      this.y += this.vy * dt * 60;
-      this.clamp(world);
+    // Death conditions
+    if (this.hunger <= 0 || this.thirst <= 0 || this.health <= 0) {
+      this.alive = false;
       return;
     }
 
-    // Command Logic
-    if (this.canCommand && this.allianceId && this.commandTimer <= 0) {
-        this.processCommands(world);
+    // Aging damage
+    if (this.age > this.maxAge) {
+      this.health -= 0.1 * dt;
     }
 
-    // Listen to commands if in an alliance
-    const alliance = world.getAlliance?.(this.allianceId);
-    // Clear stale commands if the alliance has no alive leader
-    if (alliance?.commandTargetId) {
-      const hasAliveLeader = world.peeps.some(p => p.alive && p.canCommand && p.allianceId === this.allianceId);
-      if (!hasAliveLeader) alliance.commandTargetId = null;
-    }
-    let orderTarget = null;
-    if (alliance?.commandTargetId) {
-        orderTarget = world.peeps.find(p => p.id === alliance.commandTargetId && p.alive);
-    }
+    const viewRange = this.getEyesight();
+    const isCarnivore = this.diet === "carnivore";
+    const isOmnivore = this.diet === "omnivore";
+    const isHerbivore = this.diet === "herbivore";
+    const isHungry = this.hunger < CONSTANTS.CREATURE.HUNGER_MAX * 0.45;
+    const isThirsty = this.thirst < CONSTANTS.CREATURE.THIRST_MAX * 0.45;
+    const isStarving = this.hunger < CONSTANTS.CREATURE.HUNGER_MAX * 0.2;
 
-    // Listen for loot targets shared by allies
-    if (this.allianceId && !this.hasWeapon) {
-        const loudAlly = world.peeps.find(p => p.alive && p.allianceId === this.allianceId && p.sharedLootTarget);
-        if (loudAlly) {
-            const dist = Math.hypot(loudAlly.sharedLootTarget.x - this.x, loudAlly.sharedLootTarget.y - this.y);
-            if (dist < 300) this.sharedLootTarget = loudAlly.sharedLootTarget;
-        }
+    // === PERCEPTION ===
+
+    this.nearestBush = null;
+    let nearestBushDist = viewRange;
+    for (const bush of world.bushes) {
+      if (bush.food <= 0) continue;
+      const d = Math.hypot(bush.x - this.x, bush.y - this.y);
+      if (d < nearestBushDist) { nearestBushDist = d; this.nearestBush = bush; }
     }
 
-    // ... rest of update
-    this.pickUpWeapon(world.groundWeapons);
-    this.updateSeenRelationships(world);
-    this.considerAlliance(world);
-    this.tryFallInLove(world.peeps, world, dt);
-    this.hearShouts(world);
-    this.updateGossip(world);
-    if (this.considerBetrayal(world)) return;
-
-    // --- AI BRAIN OVERRIDE ---
-    let finalGoal = null;
-    let finalTarget = null;
-    let isAiControlled = false;
-
-    if (this.isAI && this.aiGoalOverride && performance.now() < this.aiGoalOverride.expiresAt) {
-        finalGoal = this.aiGoalOverride.goal;
-        finalTarget = world.peeps.find(p => p.id === this.aiGoalOverride.targetId && p.alive);
-        isAiControlled = true;
-
-        // Emergency Override: If AI is "tweaking" (e.g. trying to scavenge while being hit)
-        // or just in extreme danger, force a survival state.
-        const immediateThreat = this.findNearestEnemy(world.peeps, world, 80);
-        if (immediateThreat.target && finalGoal !== "hunt" && finalGoal !== "flee") {
-            finalGoal = "flee";
-            finalTarget = immediateThreat.target;
-        }
-
-        if (this.aiGoalOverride.shout) {
-            this.shout(this.aiGoalOverride.shout, "ai_brain", CONSTANTS.DIALOGUE.AI_BRAIN_DURATION);
-            this.aiGoalOverride.shout = null; // Fire once
-        }
+    this.nearestWater = null;
+    let nearestWaterDist = viewRange;
+    for (const w of world.water) {
+      const d = Math.hypot(w.x - this.x, w.y - this.y);
+      if (d < nearestWaterDist) { nearestWaterDist = d; this.nearestWater = w; }
     }
 
-    if (this.state === "attack") {
-      this.updateAttack(dt, world);
-    } else if (this.state === "retreat" && this.stateTime < this.profile.retreatDuration) {
-      this.setGoal("flee", null, world);
-      this.setState("retreat");
-      this.moveInDirection(this.retreatAngle, this.hasWeapon ? CONSTANTS.SPEED.RETREAT_ARMED : CONSTANTS.SPEED.RETREAT_UNARMED, dt);
-    } else if (this.state === "panic" && this.stateTime < 4.0) {
-      this.setGoal("flee", null, world);
-      if (this.stateTime < 0.1 && this.shoutTimer <= 0) {
-        this.shout(Peep.randomLine(Peep.getMoodPool("panic", this.dialogueMood)), "social", CONSTANTS.DIALOGUE.PANIC_DURATION);
-      }
-      this.wander(dt, world);
-      const blend = 1 - Math.pow(CONSTANTS.MOVEMENT.VELOCITY_BLEND_BASE, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
-      const targetVx = Math.cos(this.wanderAngle) * CONSTANTS.SPEED.PANIC * this.speedMultiplier();
-      const targetVy = Math.sin(this.wanderAngle) * CONSTANTS.SPEED.PANIC * this.speedMultiplier();
-      this.vx = this.vx * (1 - blend) + targetVx * blend;
-      this.vy = this.vy * (1 - blend) + targetVy * blend;
-      if (Math.abs(this.vx) > CONSTANTS.MOVEMENT.VELOCITY_FLIP_THRESHOLD) this.flip = this.vx < 0 ? -1 : 1;
+    // Update exposure: near_water
+    if (this.nearestWater && nearestWaterDist < CONSTANTS.WATER.PICKUP_RANGE * 2) {
+      this.exposure.near_water += dt;
     } else {
-      const aliveCount = world.peeps.filter(p => p.alive).length;
-      const infiniteEyes = aliveCount <= 3 || this.hasLaserEyes;
+      this.exposure.near_water = Math.max(0, this.exposure.near_water - dt);
+    }
 
-      const threatRange = infiniteEyes ? Infinity : this.profile.enemyAwareness;
-      const threat = this.findNearestEnemy(world.peeps, world, threatRange);
+    // Update exposure: near_same_diet
+    let nearbySameDiet = 0;
+    for (const other of world.creatures) {
+      if (other === this || !other.alive) continue;
+      if (other.diet !== this.diet) continue;
+      if (Math.hypot(other.x - this.x, other.y - this.y) < 120) nearbySameDiet++;
+    }
+    if (nearbySameDiet >= 2) {
+      this.exposure.near_same_diet += dt;
+    } else {
+      this.exposure.near_same_diet = Math.max(0, this.exposure.near_same_diet - dt * 0.5);
+    }
 
-      if (isAiControlled) {
-          // AI Logic
-          this.setGoal(finalGoal, finalTarget, world);
-          if (finalGoal === "flee" && finalTarget) {
-              this.setState("flee");
-              this.moveAwayFrom(finalTarget.x, finalTarget.y, this.hasWeapon ? 2.1 : 2.75, dt);
-          } else if (finalGoal === "hunt" && finalTarget) {
-              this.setState("charge");
-              const dist = Math.hypot(finalTarget.x - this.x, finalTarget.y - this.y);
-              if (dist <= this.getAttackRange() && this.canStartAttack()) {
-                  this.attackTarget = finalTarget;
-                  this.setState("attack");
-                  this.attackTime = 0;
-                  this.attackApplied = false;
-              } else {
-                  this.moveToward(finalTarget.x, finalTarget.y, CONSTANTS.SPEED.CHARGE, dt);
-              }
-          } else if (finalGoal === "scavenge_weapon") {
-              const weapon = this.findNearestWeapon(world.groundWeapons, true, world);
-              if (weapon) {
-                  this.setState("scavenge");
-                  this.moveToward(weapon.x, weapon.y, CONSTANTS.SPEED.SCAVENGE, dt);
-              } else {
-                  this.setState("wander");
-                  this.wander(dt, world);
-              }
-          } else if (finalGoal === "regroup") {
-              const ally = this.findRegroupAlly(world) || world.peeps.find(p => p.alive && p !== this && p.allianceId === this.allianceId);
-              if (ally) {
-                  this.setState("regroup");
-                  this.moveToward(ally.x, ally.y, CONSTANTS.SPEED.REGROUP, dt);
-              } else {
-                  this.setState("wander");
-                  this.wander(dt, world);
-              }
-          } else if (finalGoal === "hide") {
-              this.setState("hide");
-                  this.moveInDirection(this.retreatAngle, CONSTANTS.SPEED.HIDE, dt);
-          } else {
-              this.setState("wander");
-              this.wander(dt, world);
-          }
-      } else if (this.shouldFlee(threat)) {
-        this.setGoal("flee", threat.target, world);
-        this.setState("flee");
-        if (this.stateTime < 0.1) this.shout(Peep.randomLine(Peep.getMoodPool("fleeing", this.dialogueMood), { enemy: threat.target.name }), "tactical", CONSTANTS.DIALOGUE.TACTICAL_DURATION);
-        this.moveAwayFrom(threat.target.x, threat.target.y, this.hasWeapon ? CONSTANTS.SPEED.FLEE_ARMED : CONSTANTS.SPEED.FLEE_UNARMED, dt);
-      } else {
-        const baseHuntRange = this.hasWeapon
-          ? Math.max(this.profile.huntRangeArmed, this.getAttackRange())
-          : this.profile.huntRangeUnarmed;
-        let huntRange = infiniteEyes ? Infinity : baseHuntRange;
-        if (this.posture === 'aggressive') huntRange *= CONSTANTS.ALLIANCE_POSTURE.AGGRESSIVE_HUNT_MULT;
-        else if (this.posture === 'defensive') huntRange *= 1 / CONSTANTS.ALLIANCE_POSTURE.AGGRESSIVE_HUNT_MULT;
+    // Remember resources
+    if (this.nearestBush) this.remember("bush", this.nearestBush.x, this.nearestBush.y);
+    if (this.nearestWater) this.remember("water", this.nearestWater.x, this.nearestWater.y);
 
-        // Command Priority
-        let finalEnemy = this.findNearestEnemy(world.peeps, world, huntRange);
-        const _revengeTarget = this.acquireRevengeTarget(world);
-        let _isRevenge = false;
-        if (_revengeTarget && this.canHarm(_revengeTarget.target, world)) {
-          if (!finalEnemy.target || _revengeTarget.dist < huntRange * 1.4) {
-            finalEnemy = { target: _revengeTarget.target, dist: _revengeTarget.dist };
-            _isRevenge = true;
+    // Threat detection (creatures + hounds)
+    const fleeThreshold = viewRange * 0.35;
+    let threat = null, threatDist = Infinity;
+    if (isHerbivore || (isOmnivore && !isStarving)) {
+      for (const other of world.creatures) {
+        if (other === this || !other.alive) continue;
+        if (other.genome.strength > this.genome.strength * 1.3 && other.hunger > this.hunger * 1.2) {
+          const d = Math.hypot(other.x - this.x, other.y - this.y);
+          if (d < fleeThreshold * (1 + this.genome.eyesight * 0.15) && d < threatDist) {
+            threatDist = d; threat = other;
           }
         }
-        if (orderTarget && this.canHarm(orderTarget, world)) {
-            const distToOrder = Math.hypot(orderTarget.x - this.x, orderTarget.y - this.y);
-            if (infiniteEyes || distToOrder < huntRange * 1.5) {
-                finalEnemy = { target: orderTarget, dist: distToOrder };
-                _isRevenge = false;
-            }
-        }
-
-        const weapon = !this.hasWeapon ? (this.sharedLootTarget || this.findNearestWeapon(world.groundWeapons, infiniteEyes, world)) : null;
-        if (weapon && !this.hasWeapon && performance.now() - this.lastLootShoutAt > 15000) {
-            this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, { weapon: weapon.type || 'weapon' }), "social", CONSTANTS.DIALOGUE.SOCIAL_DURATION);
-            this.sharedLootTarget = weapon;
-            this.lastLootShoutAt = performance.now();
-        }
-
-        const ally = this.findRegroupAlly(world);
-        
-        // Defender Mode: Find lover in trouble
-        let loverInTrouble = null;
-        if (this.loverId) {
-          const lover = world.peeps.find(p => p.id === this.loverId && p.alive);
-          if (lover && (lover.state === "flee" || lover.state === "panic" || world.peeps.some(p => p.alive && p.attackTarget === lover))) {
-            loverInTrouble = lover;
-          }
-        }
-
-        const _baitOpp = (!finalEnemy.target && this.hasWeapon) ? this.findBaitOpportunity(world) : null;
-        if (_baitOpp && !this.baitPosition) {
-          this.baitPosition = _baitOpp;
-          this.baitExpiresAt = _baitOpp.expiresAt;
-        }
-
-        if (!this.openingComplete && world.elapsed < 4.5) {
-          this.executeOpeningGoal(dt, world, weapon);
-        } else if (loverInTrouble) {
-          this.setGoal("defend", loverInTrouble, world);
-          this.setState("charge");
-          if (this.stateTime < 0.1) this.shout(Peep.randomLine(Peep.getMoodPool("defend", this.dialogueMood), { ally: loverInTrouble.name }), "tactical", CONSTANTS.DIALOGUE.DEFEND_DURATION);
-          this.moveToward(loverInTrouble.x, loverInTrouble.y, 2.75, dt);
-        } else if (finalEnemy.target) {
-          this.setGoal("hunt", finalEnemy.target, world);
-          this.setState("charge");
-          if (this.stateTime < 0.1 && _isRevenge && this.shoutTimer <= 0) {
-            const mem = this.memories.find(m => m.actorId === finalEnemy.target.id && (m.type === 'killed_ally' || m.type === 'betrayed_me'));
-            const ctx = mem?.type === 'killed_ally'
-              ? { killer: finalEnemy.target.name, ally: mem.allyName || 'my ally' }
-              : { betrayer: finalEnemy.target.name };
-            this.shout(Peep.randomLine(mem?.type === 'killed_ally' ? Peep.DIALOGUE.revenge_named : Peep.DIALOGUE.betrayal_named, ctx), "tactical", 2.2);
-          }
-          if (finalEnemy.dist <= this.getAttackRange() && this.canStartAttack()) {
-            this.attackTarget = finalEnemy.target;
-            this.setState("attack");
-            this.attackTime = 0;
-            this.attackApplied = false;
-          } else if (this.posture === 'flanking' && this.allianceId) {
-            const allies = world.peeps.filter(p => p.alive && p.id !== this.id && p.allianceId === this.allianceId);
-            if (allies.length > 0) {
-              let nearestAlly = allies[0], nearestDist = Math.hypot(nearestAlly.x - finalEnemy.target.x, nearestAlly.y - finalEnemy.target.y);
-              for (const a of allies) {
-                const d = Math.hypot(a.x - finalEnemy.target.x, a.y - finalEnemy.target.y);
-                if (d < nearestDist) { nearestAlly = a; nearestDist = d; }
-              }
-              const aAngle = Math.atan2(finalEnemy.target.y - nearestAlly.y, finalEnemy.target.x - nearestAlly.x);
-              const flankX = finalEnemy.target.x - Math.cos(aAngle) * 60;
-              const flankY = finalEnemy.target.y - Math.sin(aAngle) * 60;
-              this.moveToward(flankX, flankY, 2.4, dt);
-            } else {
-              this.moveToward(finalEnemy.target.x, finalEnemy.target.y, 2.35, dt);
-            }
-          } else {
-            this.moveToward(finalEnemy.target.x, finalEnemy.target.y, 2.35, dt);
-          }
-        } else if (this.baitPosition && performance.now() < this.baitExpiresAt) {
-          this.setGoal("hide", null, world);
-          this.setState("hide");
-          const distToBait = Math.hypot(this.baitPosition.x - this.x, this.baitPosition.y - this.y);
-          if (distToBait > 20) {
-            this.moveToward(this.baitPosition.x, this.baitPosition.y, CONSTANTS.SPEED.HIDE * 1.3, dt);
-          }
-          const trapEnemy = world.peeps.find(p =>
-            p.alive && p !== this && !this.isAlliedWith(p, world) &&
-            Math.hypot(p.x - this.baitPosition.weaponX, p.y - this.baitPosition.weaponY) < CONSTANTS.BAIT.ENGAGE_RANGE
-          );
-          if (trapEnemy) {
-            this.attackTarget = trapEnemy;
-            this.setState("attack");
-            this.attackTime = 0;
-            this.attackApplied = false;
-            this.baitPosition = null;
-            this.baitExpiresAt = 0;
-          }
-        } else if (weapon) {
-          this.setGoal("scavenge_weapon", null, world);
-          this.setState("scavenge");
-          this.moveToward(weapon.x, weapon.y, 2.05, dt);
-        } else if (ally) {
-          this.setGoal("regroup", ally, world);
-          this.setState("regroup");
-          this.moveToward(ally.x, ally.y, 1.65, dt);
-        } else if (this.shouldHide(world)) {
-          this.setGoal("hide", null, world);
-          this.setState("hide");
-          this.moveInDirection(this.retreatAngle, 0.85, dt);
-        } else {
-          this.setGoal("wander", null, world);
-          this.setState("wander");
-          this.sharedLootTarget = null;
-          this.wander(dt, world);
+      }
+      // Hounds as threats
+      for (const h of world.hounds || []) {
+        if (!h.alive) continue;
+        const d = Math.hypot(h.x - this.x, h.y - this.y);
+        if (d < fleeThreshold * 1.5 && d < threatDist) {
+          threatDist = d; threat = h;
         }
       }
     }
+    this._lastDriveThreat = !!threat;
+    if (threat) {
+      this.remember("threat", threat.x, threat.y);
+      this.exposure.fled += dt;
+    }
 
-    this.animate(Math.hypot(this.vx, this.vy), dt);
+    // === HUNTING ===
+    this.huntTarget = null;
+    if (isCarnivore || (isOmnivore && isStarving)) {
+      if (isHungry || isStarving) {
+        let bestPrey = null, bestPreyDist = viewRange * 0.8;
+        for (const other of world.creatures) {
+          if (other === this || !other.alive) continue;
+          if (other.genome.strength >= this.genome.strength * 1.1) continue;
+          const d = Math.hypot(other.x - this.x, other.y - this.y);
+          if (d < bestPreyDist) { bestPreyDist = d; bestPrey = other; }
+        }
+        if (bestPrey) this.huntTarget = bestPrey;
+      }
+    }
+
+    // === MATE SEEKING ===
+    this.mateTarget = null;
+    if (this.reproductionCooldown <= 0 && this.hunger > CONSTANTS.CREATURE.HUNGER_MAX * 0.6 && this.age > CONSTANTS.CREATURE.MATURITY_AGE) {
+      let mateDist = CONSTANTS.CREATURE.REPRODUCTION_RANGE * 3;
+      for (const other of world.creatures) {
+        if (other === this || !other.alive) continue;
+        if (other.reproductionCooldown > 0) continue;
+        if (other.age < CONSTANTS.CREATURE.MATURITY_AGE) continue;
+        if (other.hunger < CONSTANTS.CREATURE.HUNGER_MAX * 0.5) continue;
+        const d = Math.hypot(other.x - this.x, other.y - this.y);
+        if (d < mateDist) { mateDist = d; this.mateTarget = other; }
+      }
+    }
+
+    // === SOCIAL LEARNING ===
+    this.followTarget = null;
+    if (!threat && !this.huntTarget) {
+      this.followTarget = this.findFollowTarget(world);
+    }
+
+    // === TRAIT DISCOVERY ===
+    this.checkTraitDiscovery(dt);
+
+    // === DRIVES UPDATE ===
+    this.updateDrives(dt, world);
+
+    // === LANGUAGE SYSTEM ===
+    this.signalCooldown = Math.max(0, this.signalCooldown - dt);
+    // Compute semantic state
+    const semanticState = this.computeSemanticState();
+    this._lastSemanticState = semanticState;
+    // Compute focus
+    this.focus = this.computeFocus(world);
+    // Check urgency and broadcast
+    const { urgency, threshold } = this.computeUrgency(semanticState);
+    this.urgency += urgency * dt;
+    if (this.urgency > threshold) {
+      this.broadcast(world);
+    }
+    // React to received signals
+    const signalTarget = this._evaluateSignals(world);
+
+    // === REASONING (utility-based decision making) ===
+    const decision = this._reason(world, dt, signalTarget);
+    this.state = decision.name;
+    decision.execute(dt, world);
+
+    // === EAT FROM BUSH ===
+    if (this.nearestBush && (isHerbivore || isOmnivore)) {
+      const d = Math.hypot(this.nearestBush.x - this.x, this.nearestBush.y - this.y);
+      if (d < CONSTANTS.BUSH.PICKUP_RANGE && this.nearestBush.food > 0) {
+        this.hunger = Math.min(this.maxHunger, this.hunger + CONSTANTS.FOOD.HUNGER_VALUE);
+        this.nearestBush.food -= 1;
+        // Outcome-based learning: confirm bush memory
+        this.confirmMemory("bush", this.nearestBush.x, this.nearestBush.y, world);
+        // Language: positive outcome — food found
+        this.processLanguageInference("positive", world);
+      }
+    }
+
+    // === DRINK WATER ===
+    if (this.nearestWater) {
+      const d = Math.hypot(this.nearestWater.x - this.x, this.nearestWater.y - this.y);
+      if (d < CONSTANTS.WATER.PICKUP_RANGE) {
+        this.thirst = Math.min(this.maxThirst, this.thirst + CONSTANTS.WATER.THIRST_RESTORE * dt * 3);
+        // Outcome-based learning: confirm water memory
+        this.confirmMemory("water", this.nearestWater.x, this.nearestWater.y, world);
+        // Language: positive outcome — water found
+        this.processLanguageInference("positive", world);
+      }
+    }
+
+    // Movement integration
+    const blend = 1 - Math.pow(CONSTANTS.MOVEMENT.VELOCITY_BLEND_BASE, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
     this.x += this.vx * dt * 60;
     this.y += this.vy * dt * 60;
+    this.vx *= (1 - blend);
+    this.vy *= (1 - blend);
+    if (Math.abs(this.vx) > CONSTANTS.MOVEMENT.VELOCITY_FLIP_THRESHOLD) this.flip = this.vx < 0 ? -1 : 1;
     this.clamp(world);
+
+    // Health tracking for resilient trait
+    if (this.health < this.maxHealth * 0.4) this.exposure.low_health += dt;
   }
 
-  executeOpeningGoal(dt, world, weapon) {
-    if (this.openingGoal === "flee_center") {
-      this.setGoal("flee", null, world);
-      this.setState("flee");
-      this.moveInDirection(this.retreatAngle, 2.65, dt);
-      return;
-    }
-    if (this.openingGoal === "grab_weapon" && this.hasWeapon) {
-      this.openingComplete = true;
-      return;
-    }
-    if (this.openingGoal === "grab_weapon" && weapon) {
-      this.setGoal("scavenge_weapon", null, world);
-      this.setState("scavenge");
-      this.moveToward(weapon.x, weapon.y, CONSTANTS.SPEED.GRAB_WEAPON, dt);
-      return;
-    }
-    if (this.openingGoal === "skirt_center") {
-      this.setGoal("scavenge_weapon", null, world);
-      this.setState("scavenge");
-      const angle = Math.atan2(this.y - world.center.y, this.x - world.center.x) + CONSTANTS.MOVEMENT.SKirtCenterAngleOffset;
-      const x = world.center.x + Math.cos(angle) * CONSTANTS.MOVEMENT.SKirtCenterRadius;
-      const y = world.center.y + Math.sin(angle) * CONSTANTS.MOVEMENT.SKirtCenterRadius;
-      this.moveToward(x, y, CONSTANTS.SPEED.SKIRT_CENTER, dt);
-      return;
-    }
+  attack(target, world) {
+    if (this.attackTimer > 0) return;
+    if (!target.alive) { this.huntTarget = null; return; }
 
-    this.setGoal("rush_center", null, world);
-    this.setState("rush_center");
-      const centerDist = Math.hypot(world.center.x - this.x, world.center.y - this.y);
-      if (this.stateTime > this.profile.centerTime || centerDist < 120) {
-        this.openingComplete = true;
-        this.setState("wander");
-      }
-      this.moveToward(world.center.x, world.center.y, CONSTANTS.SPEED.RUSH_CENTER, dt);
-  }
+    this.attackTimer = 0.5;
+    const damage = CONSTANTS.HUNT.DAMAGE * (this.genome.strength / target.genome.strength);
+    target.health -= damage;
+    target.exposure.injured += 1;
 
-  chooseOpeningGoal() {
-    if (this.profile.type === "berserker" || this.stats.aggression >= 8) return "rush_center";
-    if (this.profile.type === "hunter" && this.stats.aggression >= 6) return "rush_center";
-    if (this.stats.speed >= 7 && this.stats.aggression <= 6) return "grab_weapon";
-    if (this.profile.type === "runner" || this.stats.aggression <= 3) return "flee_center";
-    if (this.stats.cunning >= 7 && this.stats.aggression <= 7) return "skirt_center";
-    if (this.stats.eyesight >= 7 && this.stats.aggression <= 5) return "skirt_center";
-    return Math.random() < 0.65 ? "rush_center" : "skirt_center";
-  }
-
-  setGoal(goal, target = null, world = null) {
-    if (this.goal === goal && this.goalTarget === target) return;
-    this.goal = goal;
-    this.goalTarget = target;
-    this.goalTime = 0;
-    const now = performance.now();
-    if (world?.logGoal && now - this.lastGoalLogAt > CONSTANTS.GOAL_LOGGING.COOLDOWN) {
-      this.lastGoalLogAt = now;
-      world.logGoal(this, goal, target);
+    if (target.health <= 0) {
+      target.alive = false;
+      this.huntTarget = null;
+      this.hunger = Math.min(this.maxHunger, this.hunger + target.genome.size * CONSTANTS.HUNT.HUNGER_RESTORE_MULT);
     }
   }
 
-  goalLabel() {
-    return this.goal.replace(/_/g, " ");
-  }
-
-  findRegroupAlly(world) {
-    if (!this.allianceId || this.health <= 1) return null;
-    
-    // Hysteresis: prevent stuttering by using a large trigger gap
-    const isRegrouping = this.goal === "regroup";
-    const minRange = CONSTANTS.REGROUP.MIN_RANGE; // Stop regrouping when this close
-    const triggerRange = CONSTANTS.REGROUP.TRIGGER_RANGE; // Only start regrouping if further than this
-    
-    const rangeThreshold = isRegrouping ? minRange : triggerRange;
-    const maxRange = this.profile.enemyAwareness * (isRegrouping ? CONSTANTS.REGROUP.RANGE_MULT_REGROUPING : CONSTANTS.REGROUP.RANGE_MULT_DEFAULT);
-
-    const allies = world.peeps
-      .filter((peep) => peep.alive && peep !== this && this.isAlliedWith(peep, world))
-      .map((peep) => ({ peep, dist: Math.hypot(peep.x - this.x, peep.y - this.y) }))
-      .filter((item) => item.dist > rangeThreshold && item.dist < maxRange)
-      .sort((a, b) => a.dist - b.dist);
-    
-    if (!allies.length) return null;
-    const wantsCompany = this.stats.friendliness + this.stats.loyalty >= CONSTANTS.REGROUP.WANTS_COMPANY_FRIENDLINESS_LOYALTY || this.health <= CONSTANTS.REGROUP.WANTS_COMPANY_HEALTH;
-    return wantsCompany ? allies[0].peep : null;
-  }
-
-  shouldHide(world) {
-    if (this.hasWeapon && this.stats.aggression >= CONSTANTS.HIDE.AGGRESSION_WEAPON_THRESHOLD) return false;
-    if (this.health <= 2 && this.stats.aggression <= CONSTANTS.HIDE.AGGRESSION_THRESHOLD) return true;
-    const alive = world.peeps.filter((peep) => peep.alive).length;
-    return alive <= CONSTANTS.HIDE.ALIVE_THRESHOLD && this.stats.aggression <= CONSTANTS.HIDE.AGGRESSION_THRESHOLD && Math.random() < CONSTANTS.HIDE.CHANCE;
-  }
-
-  updateSeenRelationships(world) {
-    for (const peep of world.peeps) {
-      if (peep === this || !peep.alive) continue;
-      const dist = Math.hypot(peep.x - this.x, peep.y - this.y);
-      if (dist <= this.profile.enemyAwareness) {
-        const rel = this.relationshipWith(peep);
-        rel.lastSeen = performance.now();
-        if (peep.hasWeapon && !this.hasWeapon) rel.fear = Math.min(100, rel.fear + 0.025);
-      }
-    }
-  }
-
-  considerAlliance(world) {
-    if (!world.requestAlliance) return;
-    if (this.stats.friendliness + this.stats.loyalty < 9) return;
-    const currentAlliance = world.getAlliance?.(this.allianceId);
-    
-    // Recruitment Logic: Leaders can merge alliances
-    const canRecruit = this.canCommand;
-    if (!canRecruit && currentAlliance && currentAlliance.members.length >= 3 && currentAlliance.strength > 50) return;
-
-    const candidates = world.peeps
-      .filter((peep) => peep !== this && peep.alive && !this.isAlliedWith(peep, world))
-      .map((peep) => ({ peep, dist: Math.hypot(peep.x - this.x, peep.y - this.y), rel: this.relationshipWith(peep) }))
-      .filter((item) => item.dist <= this.recruitmentRange && (canRecruit || item.rel.anger < 25))
-      .sort((a, b) => this.allianceDesire(b.peep, b.rel, b.dist) - this.allianceDesire(a.peep, a.rel, a.dist));
-
-    const candidate = candidates[0];
-    if (!candidate) return;
-    const last = this.lastAllianceProposal.get(candidate.peep.id) || 0;
-    if (performance.now() - last < CONSTANTS.ALLIANCE.PROPOSAL_COOLDOWN) return;
-    if (this.allianceDesire(candidate.peep, candidate.rel, candidate.dist) < (canRecruit ? CONSTANTS.ALLIANCE.LEADER_DESIRE_THRESHOLD : CONSTANTS.ALLIANCE.DESIRE_THRESHOLD)) return;
-
-    this.lastAllianceProposal.set(candidate.peep.id, performance.now());
-    world.requestAlliance(this, candidate.peep);
-  }
-
-  processCommands(world) {
-    const alliance = world.getAlliance?.(this.allianceId);
-    if (!alliance) return;
-
-    if (alliance.commandTargetId) {
-        const target = world.peeps.find(p => p.id === alliance.commandTargetId);
-        if (!target || !target.alive) {
-            alliance.commandTargetId = null;
-        }
-    }
-
-    const _members = world.peeps.filter(p => p.alive && p.allianceId === this.allianceId);
-    const _enemies = world.peeps.filter(p => p.alive && !this.isAlliedWith(p, world));
-    if (_members.length > 1) {
-      let newPosture = 'defensive';
-      const hurtCount = _members.filter(p => p.health <= Math.max(1.5, p.maxHealth * 0.45)).length;
-      const outnumbered = _enemies.length >= _members.length;
-      const anyBaiter = _members.some(p => p.stats.cunning >= CONSTANTS.ALLIANCE_POSTURE.BAIT_MEMBER_CUNNING_MIN && p.hasWeapon);
-      const weaponsOnGround = (world.groundWeapons || []).length > 0;
-      if (hurtCount >= Math.ceil(_members.length / 2) || outnumbered) {
-        newPosture = 'defensive';
-      } else if (anyBaiter && weaponsOnGround && _enemies.length >= 1) {
-        newPosture = 'baiting';
-      } else if (_members.length >= 3 && _enemies.length >= 1) {
-        newPosture = 'flanking';
-      } else {
-        newPosture = 'aggressive';
-      }
-      const oldPosture = alliance.posture || 'defensive';
-      if (newPosture !== oldPosture && Math.random() < 0.4) {
-        alliance.posture = newPosture;
-      } else {
-        alliance.posture = alliance.posture || newPosture;
-      }
-    }
-
-    // 1. HELP! If the leader is being attacked, call everyone.
-    const attacker = world.peeps.find(p => p.alive && p.attackTarget === this);
-    if (attacker) {
-        alliance.commandTargetId = attacker.id;
-        alliance.commandType = "bodyguard";
-        this.commandTimer = 4.0;
-        this.shout(Peep.randomLine(Peep.getMoodPool("defend", this.dialogueMood), { enemy: attacker.name }), "tactical");
-        return;
-    }
-
-    const members = world.peeps.filter(p => p.alive && p.allianceId === this.allianceId);
-    const enemies = world.peeps.filter(p => p.alive && !this.isAlliedWith(p, world));
-    const hurtMembers = members.filter(p => p.health <= Math.max(1.5, p.maxHealth * 0.45));
-    if (members.length >= 2 && enemies.length >= members.length && hurtMembers.length >= Math.ceil(members.length / 2)) {
-        alliance.commandTargetId = null;
-        alliance.commandType = "fallback";
-        this.commandTimer = 5.0;
-        this.shout(Peep.randomLine(Peep.getMoodPool("fleeing", this.dialogueMood)), "tactical");
-        return;
-    }
-
-    // 2. KILL ORDER! Randomly pick a target.
-    if (Math.random() < 0.05) {
-        // Prioritize non-allies
-        let targetPool = enemies;
-        
-        // If only allies left, betrayal!
-        if (targetPool.length === 0) {
-            targetPool = world.peeps.filter(p => p.alive && p !== this);
-        }
-
-        if (targetPool.length > 0) {
-            const target = targetPool[Math.floor(Math.random() * targetPool.length)];
-            alliance.commandTargetId = target.id;
-            alliance.commandType = members.length >= 3 ? "pincer" : "attack";
-            this.commandTimer = 8.0; // Commands last a while
-            this.shout(Peep.randomLine(Peep.getMoodPool("attack", this.dialogueMood), { enemy: target.name }), "tactical");
-        }
-    }
-  }
-
-  allianceDesire(other, rel, dist) {
-    const dangerNeed = this.health <= 2 || !this.hasWeapon ? CONSTANTS.ALLIANCE.DESIRE_DANGER_NEED : 0;
-    const friendliness = this.stats.friendliness * CONSTANTS.ALLIANCE.DESIRE_FRIENDLINESS_MULT;
-    const loyalty = this.stats.loyalty * CONSTANTS.ALLIANCE.DESIRE_LOYALTY_MULT;
-    const aggressionPenalty = this.stats.aggression * CONSTANTS.ALLIANCE.DESIRE_AGGRESSION_PENALTY_MULT;
-    const distancePenalty = dist * CONSTANTS.ALLIANCE.DESIRE_DIST_PENALTY_MULT;
-    return friendliness + loyalty + rel.trust * CONSTANTS.ALLIANCE.DESIRE_TRUST_MULT + rel.bond * CONSTANTS.ALLIANCE.DESIRE_BOND_MULT + dangerNeed + this.allianceBonus - rel.anger * CONSTANTS.ALLIANCE.DESIRE_ANGER_PENALTY_MULT - aggressionPenalty - distancePenalty;
-  }
-
-  considerBetrayal(world) {
-    if (!world.breakAlliance || this.betrayalCooldown > 0 || !this.allianceId) return false;
-    const allies = world.peeps.filter((peep) => peep.alive && peep !== this && this.isAlliedWith(peep, world));
-    if (!allies.length) return false;
-    const alive = world.peeps.filter((peep) => peep.alive);
-    const latePressure = alive.length <= Math.max(3, allies.length + 1) ? CONSTANTS.ALLIANCE.BETRAYAL_LATE_PRESSURE : 0;
-    let best = null;
-    let bestScore = -Infinity;
-
-    for (const ally of allies) {
-      const rel = this.relationshipWith(ally);
-      const opportunity = (ally.hasWeapon && !this.hasWeapon ? CONSTANTS.ALLIANCE.BETRAYAL_WEAPON_OPPORTUNITY : 0) + (ally.health <= 2 ? CONSTANTS.ALLIANCE.BETRAYAL_HEALTH_OPPORTUNITY : 0);
-      const aggressionDrive = this.stats.aggression * CONSTANTS.ALLIANCE.BETRAYAL_AGGRESSION_MULT;
-      const cunningDrive = this.stats.cunning * (CONSTANTS.ALLIANCE.BETRAYAL_AGGRESSION_MULT * 0.5) * (opportunity > 0 ? 1.3 : 0.6);
-      const score = aggressionDrive + cunningDrive + opportunity + latePressure + world.betrayalPressure - this.stats.loyalty * CONSTANTS.ALLIANCE.BETRAYAL_LOYALTY_PENALTY_MULT - rel.bond * CONSTANTS.ALLIANCE.BETRAYAL_BOND_PENALTY_MULT - rel.trust * CONSTANTS.ALLIANCE.BETRAYAL_TRUST_PENALTY_MULT;
-      if (score > bestScore) {
-        best = ally;
-        bestScore = score;
-      }
-    }
-
-    if (!best || bestScore < CONSTANTS.ALLIANCE.BETRAYAL_SCORE_MIN) return false;
-    world.breakAlliance(this, best);
-    const barkPool = this.revengeTargetId === best.id && performance.now() < this.revengeExpiresAt
-      ? Peep.DIALOGUE.betrayal_named
-      : Peep.getMoodPool("betray", this.dialogueMood);
-    this.shout(Peep.randomLine(barkPool, { victim: best.name, betrayer: best.name }), "social", 2.5);
-    this.betrayalCooldown = randomRange(CONSTANTS.ALLIANCE.POST_BETRAYAL_COOLDOWN_MIN, CONSTANTS.ALLIANCE.POST_BETRAYAL_COOLDOWN_MAX);
-    this.attackTarget = best;
-    this.setState("charge");
-    return true;
-  }
-
-  findNearestWeapon(groundWeapons, infiniteEyes = false, world = null) {
-    const range = infiniteEyes ? Infinity : (90 + this.stats.eyesight * 32) * this.scavengerMultiplier;
-    let nearest = null;
-    let nearestDist = range;
-    const alliance = world?.getAlliance?.(this.allianceId);
-    const loot = alliance?.lootTarget;
-    if (loot && performance.now() < loot.expiresAt) {
-      const lootDist = Math.hypot(loot.x - this.x, loot.y - this.y);
-      const stillExists = groundWeapons.some(w => w.type === loot.type && Math.hypot(w.x - loot.x, w.y - loot.y) < 8);
-      if (stillExists && lootDist < range * 1.35) {
-        nearest = loot;
-        nearestDist = lootDist;
-      }
-    }
-    for (const weapon of groundWeapons) {
-      const dist = Math.hypot(weapon.x - this.x, weapon.y - this.y);
-      if (dist < nearestDist) {
-        nearest = weapon;
-        nearestDist = dist;
-      }
-    }
-    if (nearest && alliance && performance.now() - this.lastLootShoutAt > 8000) {
-      alliance.lootTarget = {
-        type: nearest.type,
-        x: nearest.x,
-        y: nearest.y,
-        expiresAt: performance.now() + 6500,
-      };
-      this.lastLootShoutAt = performance.now();
-      this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, { weapon: this.weaponLabel(nearest.type) }), "loot");
-    }
-    return nearest;
-  }
-
-  weaponLabel(type) {
-    if (type === "gun") return "glock";
-    if (type === "shotgun") return "shotgun";
-    if (type === "bat") return "bat";
-    if (type === "axe") return "axe";
-    if (type === "laser_eyes") return "laser eyes";
-    return "weapon";
-  }
-
-  shouldFlee(threat) {
-    if (this.name.toLowerCase() === "superman") return false;
-    if (!threat.target) return false;
-    
-    let fleeRange = this.hasWeapon ? this.profile.fleeRangeArmed : this.profile.fleeRangeUnarmed;
-    if (this.posture === 'defensive') fleeRange *= CONSTANTS.ALLIANCE_POSTURE.DEFENSIVE_OUTNUMBER_MULT;
-    else if (this.posture === 'aggressive') fleeRange /= CONSTANTS.ALLIANCE_POSTURE.AGGRESSIVE_HUNT_MULT;
-    
-    // Hysteresis / Debouncing:
-    // If already fleeing, stay in flee state until danger is 50% further away.
-    // If hunting, don't flee until danger is 20% closer.
-    if (this.state === "flee") {
-      fleeRange *= CONSTANTS.FLEE.HYSTERESIS_FLEE_MULT;
-    } else if (this.state === "charge" || this.state === "attack") {
-      fleeRange *= CONSTANTS.FLEE.HYSTERESIS_HUNT_MULT;
-    }
-
-    if (threat.dist > fleeRange) return false;
-
-    // Courage/Anger logic: If we are very angry at this person, we are less likely to flee
-    const rel = this.relationshipWith(threat.target);
-    const angerCourage = (rel?.anger || 0) * CONSTANTS.FLEE.ANGER_COURAGE_MULT; // Increased weight
-    if (this.stats.aggression + angerCourage >= CONSTANTS.FLEE.AGGRESSION_COURAGE_THRESHOLD && this.health > CONSTANTS.FLEE.HEALTH_COURAGE_THRESHOLD) {
-        if (this.state === "flee" && Math.random() < CONSTANTS.FLEE.REVENGE_SHOUT_CHANCE) this.shout(Peep.randomLine(Peep.getMoodPool("revenge", this.dialogueMood), { enemy: threat.target.name }), "tactical");
-        return false;
-    }
-
-    if (this.profile.type === "berserker") return false;
-    if (this.health <= 1) return true;
-    if (!this.hasWeapon && threat.target.hasWeapon) return true;
-    return this.profile.type === "runner" || (this.profile.type === "wanderer" && Math.random() < 0.4);
-  }
-
-  updateAttack(dt, world) {
-    this.attackTime += dt;
-
-    const weaponConfig = WEAPON_REGISTRY[this.weapon];
-    const isRanged = weaponConfig?.ranged;
-
-    // Non-laser ranged: plant feet during wind-up and firing
-    if (isRanged && !this.hasLaserEyes && (this.laserPhase === "charging" || this.laserPhase === "firing")) {
-      this.vx *= 0.05;
-      this.vy *= 0.05;
-    }
-
-    // Super Speed: never slow down while hunting or fleeing
-    if (!this.hasSuperSpeed || (this.state !== "flee" && this.state !== "charge")) {
-      const damping = Math.pow(CONSTANTS.COMBAT.ATTACK_DAMPING_BASE, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
-      this.vx *= damping;
-      this.vy *= damping;
-    }
-
-    if (!this.attackTarget?.alive || !this.canHarm(this.attackTarget, world)) {
-      this.setState("charge");
-      return;
-    }
-
-    // Face the target
-    if (this.attackTarget.x !== this.x) {
-      this.flip = this.attackTarget.x < this.x ? -1 : 1;
-    }
-
-    const dist = Math.hypot(this.attackTarget.x - this.x, this.attackTarget.y - this.y);
-
-    if (isRanged) {
-        const r = weaponConfig;
-        if (this.laserPhase === "idle" && this.laserCooldown <= 0 && dist <= r.range && this.attackTarget) {
-            this.laserPhase = "charging";
-            this.laserWindUp = r.windUp ?? CONSTANTS.LASER.WIND_UP;
-            this.laserAimX = this.attackTarget.x;
-            this.laserAimY = this.attackTarget.y;
-            return;
-        } else if (this.laserPhase === "charging" && this.laserWindUp <= 0) {
-            this.laserPhase = "firing";
-            this.laserDuration = r.fireDuration ?? CONSTANTS.LASER.FIRE_DURATION;
-
-            if (!this.hasLaserEyes && this.attackTarget?.alive) {
-                const aimAngle = Math.atan2(this.laserAimY - this.y, this.laserAimX - this.x);
-                const barrelX = this.x + Math.cos(aimAngle) * 24;
-                const barrelY = this.y - 18 + Math.sin(aimAngle) * 20;
-
-                if (this.weapon === "shotgun") {
-                    const baseAngle = Math.atan2(this.laserAimY - barrelY, this.laserAimX - barrelX);
-                    const baseDist = Math.hypot(this.laserAimX - barrelX, this.laserAimY - barrelY);
-                    const pellets = 4;
-                    for (let i = 0; i < pellets; i++) {
-                        const spread = (Math.random() - 0.5) * 0.24;
-                        const angle = baseAngle + spread;
-                        world.spawnProjectile({
-                            x: barrelX,
-                            y: barrelY,
-                            targetX: barrelX + Math.cos(angle) * baseDist,
-                            targetY: barrelY + Math.sin(angle) * baseDist,
-                            speed: 550,
-                            maxDistance: r.range * 1.5,
-                            damage: this.getDamage(),
-                            weapon: this.weapon,
-                            ownerId: this.id,
-                        });
-                    }
-                } else {
-                    world.spawnProjectile({
-                        x: barrelX,
-                        y: barrelY,
-                        targetX: this.laserAimX,
-                        targetY: this.laserAimY,
-                        speed: 700,
-                        maxDistance: r.range * 1.5,
-                        damage: this.getDamage(),
-                        weapon: this.weapon,
-                        ownerId: this.id,
-                    });
-                }
-
-                // Shell casing ejection (perpendicular, behind gun)
-                const ejectAngle = aimAngle + (this.flip > 0 ? Math.PI / 2 : -Math.PI / 2);
-                world.spawnEffect?.("shell", {
-                    x: barrelX,
-                    y: barrelY,
-                    vx: Math.cos(ejectAngle) * (80 + Math.random() * 40) - Math.cos(aimAngle) * 30,
-                    vy: Math.sin(ejectAngle) * (60 + Math.random() * 30) - 120,
-                    groundY: this.y,
-                    gravity: 400,
-                    bounce: 0.4,
-                    rotation: Math.random() * Math.PI * 2,
-                    vr: (Math.random() - 0.5) * 30,
-                    life: 0.6,
-                    maxLife: 0.6,
-                });
-
-                // Sonic crack line – a long flash from barrel to target
-                world.spawnEffect?.("sonic_crack", {
-                    x: barrelX,
-                    y: barrelY,
-                    targetX: this.laserAimX,
-                    targetY: this.laserAimY,
-                    life: 0.04,
-                    maxLife: 0.04,
-                });
-
-                // Camera shake
-                world.triggerShake?.(this.weapon === "shotgun" ? 3.5 : 2, 0.12);
-            } else {
-                const dodgeDist = Math.hypot(
-                    (this.attackTarget?.x || this.laserAimX) - this.laserAimX,
-                    (this.attackTarget?.y || this.laserAimY) - this.laserAimY
-                );
-                if (dodgeDist < (r.dodgeDistance ?? CONSTANTS.LASER.DODGE_DISTANCE) && this.attackTarget?.alive) {
-                    const wasAliveBefore = this.attackTarget.alive;
-                    const laserDamage = this.getDamage();
-                    const dealt = this.attackTarget.takeDamage(laserDamage, this);
-                    if (this.lifesteal) this.health = Math.min(this.maxHealth, this.health + dealt * this.lifesteal);
-                    this.attackTarget.remember("attacked_me", this, 1);
-                    this.attackDamageDealt = true;
-                    const killedTarget = wasAliveBefore && !this.attackTarget.alive;
-                    if (killedTarget && Math.random() < CONSTANTS.COMBAT_BARK.KILL_CHANCE) {
-                      this.maybeCombatBark("attack_kill", { enemy: this.attackTarget.name });
-                    } else if (Math.random() < CONSTANTS.COMBAT_BARK.HIT_CHANCE) {
-                      this.maybeCombatBark("attack_hit", { enemy: this.attackTarget.name });
-                    }
-                }
-            }
-            return;
-        } else if (this.laserPhase === "firing" && this.laserDuration <= 0) {
-            this.laserPhase = "cooldown";
-            this.laserCooldown = r.cooldown ?? CONSTANTS.LASER.COOLDOWN;
-        } else if (this.laserPhase === "cooldown" && this.laserCooldown <= 0) {
-            this.laserPhase = "idle";
-        }
-        if (this.laserPhase !== "idle" && dist > r.range + CONSTANTS.LASER.RANGE_BUFFER) {
-            this.setState("charge");
-            return;
-        }
-    }
-
-    if (!this.attackApplied && this.attackTime >= CONSTANTS.COMBAT.ATTACK_APPLY_TIME) {
-      let damageLanded = false;
-      let killedTarget = false;
-      if (!isRanged && dist <= this.getAttackRange() + CONSTANTS.COMBAT.ATTACK_RANGE_BUFFER) {
-        const wasAliveBefore = this.attackTarget.alive;
-        const damage = this.getDamage();
-        const dealt = this.attackTarget.takeDamage(damage, this);
-        damageLanded = dealt > 0;
-        killedTarget = wasAliveBefore && !this.attackTarget.alive;
-        if (this.lifesteal) this.health = Math.min(this.maxHealth, this.health + dealt * this.lifesteal);
-        this.attackTarget.remember("attacked_me", this, 1);
-        for (const peep of world.peeps) {
-          if (peep !== this && peep !== this.attackTarget && peep.alive && world.areAllied?.(peep, this)) {
-            peep.remember("fought_beside_me", this, 0.35);
-          }
-        }
-        world.hitEvents.push({
-          x: this.attackTarget.x,
-          y: this.attackTarget.y,
-          weapon: this.weapon || "fists",
-          side: this.attackTarget.bodyFrame,
-          target: this.attackTarget,
-          killer: this,
-          fatal: killedTarget,
-        });
-      }
-      this.attackApplied = true;
-      if (damageLanded) {
-        this.attackDamageDealt = true;
-        if (killedTarget && Math.random() < CONSTANTS.COMBAT_BARK.KILL_CHANCE) {
-          this.maybeCombatBark("attack_kill", { enemy: this.attackTarget.name });
-        } else if (Math.random() < CONSTANTS.COMBAT_BARK.HIT_CHANCE) {
-          this.maybeCombatBark("attack_hit", { enemy: this.attackTarget.name });
-        }
-      }
-      // Super Speed: hit-and-run — zoom away immediately after attacking
-      if (this.hasSuperSpeed) {
-        this.setState("flee");
-      }
-    }
-    if (!this.hasSuperSpeed && this.attackTime >= CONSTANTS.COMBAT.ATTACK_MAX_TIME) {
-      if (!this.attackDamageDealt && Math.random() < CONSTANTS.COMBAT_BARK.MISS_CHANCE && this.attackTarget?.alive) {
-        this.maybeCombatBark("attack_miss", { enemy: this.attackTarget.name });
-      }
-      this.setState("charge");
-    }
-    this.animate(0.5, dt);
-  }
-
-  setState(state) {
-    if (this.state === state) return;
-    if (state === 'attack') {
-      this.attackDamageDealt = false;
-    }
-    // If leaving attack with a non-laser ranged weapon, reset phase so it never strands mid-cycle
-    if (this.state === "attack" && !this.hasLaserEyes) {
-      const w = WEAPON_REGISTRY[this.weapon];
-      if (w?.ranged) {
-        this.laserPhase = "idle";
-        this.laserWindUp = 0;
-        this.laserDuration = 0;
-      }
-    }
-    this.state = state;
-    this.stateTime = 0;
-  }
-
-  getAttackRange() {
-    const weaponConfig = WEAPON_REGISTRY[this.weapon];
-    return weaponConfig ? weaponConfig.range : WEAPON_REGISTRY.fists.range;
-  }
-
-  getDamage() {
-    const strengthBonus = Math.max(0, Math.floor((this.stats.strength - CONSTANTS.COMBAT.MELEE_STAT_THRESHOLD) / CONSTANTS.COMBAT.MELEE_STAT_DIVISOR));
-    const weaponConfig = WEAPON_REGISTRY[this.weapon];
-    let damage = (!weaponConfig || this.weapon === "fists") ? WEAPON_REGISTRY.fists.damage + strengthBonus : weaponConfig.damage + strengthBonus;
-    if (this.hasMomentum && this.state === "charge") {
-      const speedBonus = Math.floor(this.speedMultiplier() * CONSTANTS.COMBAT.MOMENTUM_SPEED_MULT);
-      damage += speedBonus;
-    }
-    return damage;
-  }
-
-  pickUpWeapon(groundWeapons) {
-    if (this.hasWeapon) return;
-    const pickupRange = CONSTANTS.WEAPON_ITEM.PICKUP_RANGE * this.scavengerMultiplier;
-    const index = groundWeapons.findIndex((weapon) => Math.hypot(weapon.x - this.x, weapon.y - this.y) <= pickupRange);
-    if (index >= 0) {
-      const [weapon] = groundWeapons.splice(index, 1);
-      this.equipWeapon(weapon.type);
-      if (this.shoutTimer <= 0) this.shout(Peep.randomLine(Peep.DIALOGUE.found_weapon, { weapon: this.weaponLabel(weapon.type) }), "loot");
-    }
-  }
-
-  wander(dt, world) {
+  wander(dt) {
     this.wanderTime -= dt;
     if (this.wanderTime <= 0) {
-      this.wanderTime = 0.8 + Math.random() * 1.8;
-      
-      // Tethered Wandering: If in an alliance, bias the angle toward the nearest ally
-      let biasAngle = null;
-      if (this.allianceId && world) {
-        const nearestAlly = world.peeps.find(p => p.alive && p !== this && p.allianceId === this.allianceId);
-        if (nearestAlly) {
-          biasAngle = Math.atan2(nearestAlly.y - this.y, nearestAlly.x - this.x);
-        }
-      }
-
-      if (biasAngle !== null && Math.random() < 0.4) {
-        // 40% chance to drift toward ally instead of fully random
-        this.wanderAngle = biasAngle + (-0.5 + Math.random() * 1.0);
-      } else {
-        this.wanderAngle += -1.1 + Math.random() * 2.2;
-      }
+      this.wanderAngle += (Math.random() - 0.5) * (1.5 - this.getIntel() * 0.3);
+      this.wanderTime = 1 + Math.random() * (3 - this.getIntel() * 0.5);
     }
-    let vx = Math.cos(this.wanderAngle) * CONSTANTS.SPEED.WANDER * this.speedMultiplier();
-    let vy = Math.sin(this.wanderAngle) * CONSTANTS.SPEED.WANDER * this.speedMultiplier();
-    const _danger = this.dangerZonePenalty(this.x, this.y);
-    vx += _danger.x * CONSTANTS.DANGER_ZONE.WANDER_AVOIDANCE * 1.5;
-    vy += _danger.y * CONSTANTS.DANGER_ZONE.WANDER_AVOIDANCE * 1.5;
-    this.applyVelocity(vx, vy, dt);
-  }
-
-  moveToward(x, y, speed, dt) {
-    const dx = x - this.x;
-    const dy = y - this.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    this.applyVelocity((dx / dist) * speed * this.speedMultiplier(), (dy / dist) * speed * this.speedMultiplier(), dt);
-  }
-
-  moveAwayFrom(x, y, speed, dt) {
-    const dx = this.x - x;
-    const dy = this.y - y;
-    const dist = Math.hypot(dx, dy) || 1;
-    this.applyVelocity((dx / dist) * speed * this.speedMultiplier(), (dy / dist) * speed * this.speedMultiplier(), dt);
-  }
-
-  moveInDirection(angle, speed, dt) {
-    this.applyVelocity(Math.cos(angle) * speed * this.speedMultiplier(), Math.sin(angle) * speed * this.speedMultiplier(), dt);
-  }
-
-  speedMultiplier() {
-    const base = CONSTANTS.MOVEMENT.BASE_MULTIPLIER + this.stats.speed * CONSTANTS.MOVEMENT.STAT_COEFFICIENT;
-    let mult = this.isFlying ? base * CONSTANTS.MOVEMENT.FLYING_BONUS : base;
-    if (this.hasSuperSpeed && CONSTANTS.MOVEMENT.SUPER_SPEED_STATES.includes(this.state)) mult *= CONSTANTS.MOVEMENT.SUPER_SPEED_MULT;
-    mult *= this.speedDebuff;
-    if (this.stamina <= CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD) {
-      mult *= CONSTANTS.STAMINA.SPEED_PENALTY_EXHAUSTED;
-    } else if (this.stamina <= CONSTANTS.STAMINA.LOW_THRESHOLD) {
-      const t = (this.stamina - CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD) / (CONSTANTS.STAMINA.LOW_THRESHOLD - CONSTANTS.STAMINA.EXHAUSTED_THRESHOLD);
-      mult *= CONSTANTS.STAMINA.SPEED_PENALTY_LOW + (1 - CONSTANTS.STAMINA.SPEED_PENALTY_LOW) * t;
-    }
-    return mult;
-  }
-
-  applyVelocity(vx, vy, dt) {
     const blend = 1 - Math.pow(CONSTANTS.MOVEMENT.VELOCITY_BLEND_BASE, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
-    this.vx = this.vx * (1 - blend) + vx * blend;
-    this.vy = this.vy * (1 - blend) + vy * blend;
-    if (Math.abs(this.vx) > CONSTANTS.MOVEMENT.VELOCITY_FLIP_THRESHOLD) this.flip = this.vx < 0 ? -1 : 1;
+    const targetVx = Math.cos(this.wanderAngle) * this.getSpeed();
+    const targetVy = Math.sin(this.wanderAngle) * this.getSpeed();
+    this.vx = this.vx * (1 - blend) + targetVx * blend;
+    this.vy = this.vy * (1 - blend) + targetVy * blend;
   }
 
-  animate(speed, dt) {
-    this.hop = (this.hop + (speed / 40) * dt * 60) % 1;
+  moveToward(tx, ty, speed, dt) {
+    const dx = tx - this.x, dy = ty - this.y, d = Math.hypot(dx, dy) || 1;
+    const blend = 1 - Math.pow(CONSTANTS.MOVEMENT.VELOCITY_BLEND_BASE, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
+    this.vx = this.vx * (1 - blend) + (dx / d) * speed * blend;
+    this.vy = this.vy * (1 - blend) + (dy / d) * speed * blend;
+  }
+
+  moveAwayFrom(tx, ty, speed, dt) {
+    const dx = this.x - tx, dy = this.y - ty, d = Math.hypot(dx, dy) || 1;
+    const blend = 1 - Math.pow(CONSTANTS.MOVEMENT.VELOCITY_BLEND_BASE, dt * CONSTANTS.MOVEMENT.PHYSICS_TICK_RATE);
+    this.vx = this.vx * (1 - blend) + (dx / d) * speed * blend;
+    this.vy = this.vy * (1 - blend) + (dy / d) * speed * blend;
+  }
+
+  reproduce(mate, world) {
+    if (this.reproductionCooldown > 0 || mate.reproductionCooldown > 0) return;
+    if (this.hunger < CONSTANTS.CREATURE.REPRODUCTION_HUNGER_COST) return;
+    if (mate.hunger < CONSTANTS.CREATURE.REPRODUCTION_HUNGER_COST) return;
+
+    // Speciation gate: genetic distance must be below threshold
+    const dist = Creature.geneticDistance(this, mate);
+    if (dist > CONSTANTS.SPECIATION.COMPATIBILITY_THRESHOLD) return;
+
+    const cost = CONSTANTS.CREATURE.REPRODUCTION_HUNGER_COST * (1 + (this.genome.fertility - 1) * 0.4);
+    this.hunger -= cost;
+    mate.hunger -= cost * 0.5;
+    this.reproductionCooldown = CONSTANTS.CREATURE.REPRODUCTION_COOLDOWN;
+    mate.reproductionCooldown = CONSTANTS.CREATURE.REPRODUCTION_COOLDOWN;
+
+    // Inherit alleles
+    const [allelesA, allelesB] = Creature.inheritAlleles(this, mate);
+
+    // Inherit custom traits
+    const childTraits = [];
+    const allParentTraits = new Set([...this.customTraits, ...mate.customTraits]);
+    for (const key of allParentTraits) {
+      if (Math.random() < CONSTANTS.TRAIT_DISCOVERY.INHERIT_CHANCE) {
+        childTraits.push(key);
+      } else if (Math.random() < CONSTANTS.TRAIT_DISCOVERY.MUTATE_TRAIT_CHANCE) {
+        // Trait mutation: gain a random new trait
+        const allKeys = Object.keys(CONSTANTS.CUSTOM_TRAIT_LIBRARY);
+        const newKey = allKeys[Math.floor(Math.random() * allKeys.length)];
+        if (!childTraits.includes(newKey)) childTraits.push(newKey);
+      }
+    }
+
+    // Inherit language vocab (mutated combined vocab from both parents)
+    const childVocab = this._mutateVocab([...this.productionVocab, ...mate.productionVocab]);
+
+    // Diet: 85% chance same as parent, 15% random
+    const childDiet = Math.random() < 0.85 ? this.diet : ["herbivore", "carnivore", "omnivore"][Math.floor(Math.random() * 3)];
+
+    const childConfig = {
+      name: `Gen${this.generation + 1}-${nextCreatureId}`,
+      parentAlleles: [allelesA, allelesB],
+      diet: childDiet,
+      generation: this.generation + 1,
+      parentId: this.id,
+      customTraits: childTraits,
+      productionVocab: childVocab,
+    };
+
+    // Speciation: determine species ID and name
+    const sameSpecies = this.speciesId === mate.speciesId;
+    const split = sameSpecies && Math.random() < CONSTANTS.SPECIATION.HYBRID_SPLIT_CHANCE;
+    const hybrid = !sameSpecies;
+    if (split || hybrid) {
+      childConfig.speciesId = Creature._nextSpeciesId++;
+      // Name auto-generated by constructor from expressed genome
+      if (hybrid) {
+        childConfig.name = `Hybrid ${this.speciesName} × ${mate.speciesName} #${nextCreatureId}`;
+      }
+      // Log speciation event
+      if (typeof world.logSpeciation === "function") {
+        world.logSpeciation({
+          type: hybrid ? "hybrid" : "split",
+          parentSpeciesA: this.speciesName,
+          parentSpeciesB: mate.speciesName,
+          childSpeciesId: childConfig.speciesId,
+          generation: this.generation + 1,
+        });
+      }
+    } else {
+      childConfig.speciesId = this.speciesId;
+      childConfig.speciesName = this.speciesName;
+    }
+
+    const offsetX = (Math.random() - 0.5) * 40;
+    const offsetY = (Math.random() - 0.5) * 40;
+    world.spawnCreature(childConfig, this.x + offsetX, this.y + offsetY);
+    world.logBirth(this, mate);
   }
 
   clamp(world) {
-    // Clamp position to world bounds with 24px margin
-    const min = CONSTANTS.MOVEMENT.WORLD_MARGIN;
-    const maxX = world.width - CONSTANTS.MOVEMENT.WORLD_MARGIN;
-    const maxY = world.height - CONSTANTS.MOVEMENT.WORLD_MARGIN;
-    
-    // Zero out velocity pointing into the wall when clamped
-    if (this.x <= min && this.vx < 0) this.vx = 0;
-    if (this.x >= maxX && this.vx > 0) this.vx = 0;
-    if (this.y <= min && this.vy < 0) this.vy = 0;
-    if (this.y >= maxY && this.vy > 0) this.vy = 0;
-    
-    this.x = Math.max(min, Math.min(maxX, this.x));
-    this.y = Math.max(min, Math.min(maxY, this.y));
-  }
-
-  render(ctx, sprites, spriteCache) {
-    if (!this.alive) return;
-
-    // Store trail for motion blur
-    this.trailPositions.push({ x: this.x, y: this.y, hop: this.hop, flip: this.flip });
-    if (this.trailPositions.length > CONSTANTS.SUPER_SPEED.TRAIL_LENGTH) this.trailPositions.shift();
-
-    const phase = Math.sin(this.hop * Math.PI * 2);
-    const bounce = 1 + Math.max(0, -phase) * CONSTANTS.PEEP.VISUAL_BOUNCE;
-    const bob = this.isFlying ? CONSTANTS.PEEP.FLY_HEIGHT : Math.abs(phase) * CONSTANTS.PEEP.BOB_HEIGHT;
-    const rotation = phase * 0.1;
-    const scaleX = CONSTANTS.PEEP.BASE_SCALE * bounce * this.flip * this.visualScale;
-    const scaleY = CONSTANTS.PEEP.BASE_SCALE / bounce * this.visualScale;
-    
-    // Use cached sprite lookups (passed from render()) to avoid per-peep Map.get() overhead
-    const bodyAtlas = spriteCache?.body || sprites.get("body");
-    const redAtlas = spriteCache?.red || sprites.get("body_red");
-    const loveHatAtlas = spriteCache?.loveHat || sprites.get("lovehat");
-    const loverShirtAtlas = spriteCache?.loverShirt || sprites.get("lover_shirt");
-    
-    // Choose face atlas based on state
-    let faceAtlas;
-    let faceAtlasName;
-    if (this.state === "charge" || this.state === "attack") {
-      faceAtlas = spriteCache?.faceMurder || sprites.get("face_murder");
-      faceAtlasName = "face_murder";
-    } else if (this.state === "flee" || this.state === "retreat" || this.state === "panic") {
-      faceAtlas = spriteCache?.faceNervous || sprites.get("face_nervous");
-      faceAtlasName = "face_nervous";
-    } else {
-      faceAtlas = spriteCache?.face || sprites.get("face");
-      faceAtlasName = "face";
-    }
-    let faceFrame = Math.random() < CONSTANTS.PEEP.FACE_BLINK_CHANCE ? 2 : this.faceFrame;
-    if (this.state === "panic") faceFrame = CONSTANTS.PEEP.PANIC_FACE_FRAME; // Crying face when panicking
-    const bodyName = `body${this.bodyFrame}`;
-
-    ctx.save();
-    ctx.translate(this.x, this.y - bob);
-    
-    // Draw body base + red overlay + love assets
-    const drewBody = bodyAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-    if (this.isRed) redAtlas?.draw(ctx, `body_red${this.bodyFrame}`, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-    if (this.loverId) {
-        loverShirtAtlas?.draw(ctx, `lover_shirt${this.bodyFrame}`, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-        loveHatAtlas?.draw(ctx, "lovehat0", 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-    }
-    
-    this.renderFace(ctx, faceAtlas, faceAtlasName, faceFrame, scaleX, scaleY, rotation);
-    if (!drewBody) this.drawFallback(ctx);
-    if (this.weapon) this.renderWeapon(ctx, sprites);
-    this.renderHitFlash(ctx);
-
-    // Laser eyes glow red during wind-up
-    if (this.hasLaserEyes && this.laserPhase === "charging") {
-      const t = performance.now() / 1000;
-      const intensity = 0.7 + Math.sin(t * 20) * 0.3;
-      ctx.save();
-      ctx.shadowBlur = 14;
-      ctx.shadowColor = `rgba(255, 0, 0, ${intensity})`;
-      ctx.fillStyle = `rgba(255, 60, 60, ${intensity})`;
-      ctx.beginPath(); ctx.arc(-6, -27, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -27, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = `rgba(255, 200, 200, ${intensity * 0.6})`;
-      ctx.beginPath(); ctx.arc(-6, -27, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -27, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-    }
-
-    ctx.restore();
-
-    // Ghost after-images when super speed is active (drawn after the peep, before shout)
-    if (this.hasSuperSpeed && (this.state === "flee" || this.state === "charge")) {
-      for (let i = 0; i < this.trailPositions.length - 1; i++) {
-        const t = this.trailPositions[i];
-        ctx.save();
-        ctx.globalAlpha = ((i + 1) / this.trailPositions.length) * 0.25;
-        const ghostPhase = Math.sin(t.hop * Math.PI * 2);
-        const ghostBob = Math.abs(ghostPhase) * CONSTANTS.PEEP.BOB_HEIGHT;
-        const ghostSX = CONSTANTS.PEEP.BASE_SCALE * (1 + Math.max(0, -ghostPhase) * CONSTANTS.PEEP.VISUAL_BOUNCE) * t.flip * this.visualScale;
-        const ghostSY = CONSTANTS.PEEP.BASE_SCALE / (1 + Math.max(0, -ghostPhase) * CONSTANTS.PEEP.VISUAL_BOUNCE) * this.visualScale;
-        ctx.translate(t.x, t.y - ghostBob);
-        ctx.scale(ghostSX, ghostSY);
-        bodyAtlas?.draw(ctx, bodyName, 0, 0, { scaleX: 1, scaleY: 1, rotation: 0, anchorY: 0.72 });
-        ctx.restore();
-      }
-    }
-
-    this.renderShout(ctx);
-  }
-
-  renderShout(ctx) {
-    if (!this.shoutText || this.shoutTimer <= 0) return;
-    const progress = 1 - this.shoutTimer / Math.max(0.01, this.shoutDuration || 2.5);
-    const alpha = Math.min(1, this.shoutTimer / 0.25, (1 - progress) / 0.18);
-    const y = this.y - CONSTANTS.DIALOGUE.SHOUT_HEIGHT_OFFSET - progress * CONSTANTS.DIALOGUE.SHOUT_RISE; // Slightly higher
-    const paddingX = CONSTANTS.DIALOGUE.PADDING_X;
-    const h = CONSTANTS.DIALOGUE.BUBBLE_HEIGHT;
-
-    ctx.save();
-    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-    ctx.font = "700 12px Segoe UI, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    const w = Math.min(CONSTANTS.DIALOGUE.MAX_WIDTH, ctx.measureText(this.shoutText).width + paddingX * 2);
-    const color = this.shoutType === "tactical" ? "#ffd866" : this.shoutType === "loot" ? "#7de3ff" : "#ffffff";
-    
-    ctx.fillStyle = "rgba(10, 10, 14, 0.92)";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    
-    const bx = this.x - w / 2;
-    const by = y - h / 2;
-    const r = CONSTANTS.DIALOGUE.BUBBLE_RADIUS;
-    
-    ctx.beginPath();
-    ctx.moveTo(bx + r, by);
-    ctx.arcTo(bx + w, by, bx + w, by + h, r);
-    ctx.arcTo(bx + w, by + h, bx, by + h, r);
-    ctx.lineTo(bx + w * 0.58, by + h);
-    ctx.lineTo(bx + w * 0.5, by + h + 8);
-    ctx.lineTo(bx + w * 0.42, by + h);
-    ctx.arcTo(bx, by + h, bx, by, r);
-    ctx.arcTo(bx, by, bx + w, by, r);
-    ctx.closePath();
-    
-    ctx.fill();
-    ctx.stroke();
-    
-    ctx.fillStyle = color;
-    ctx.fillText(this.shoutText, this.x, y);
-    ctx.restore();
-  }
-
-  drawBubble(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.lineTo(x + w * 0.58, y + h);
-    ctx.lineTo(x + w * 0.5, y + h + 6);
-    ctx.lineTo(x + w * 0.42, y + h);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  }
-
-  static drawFaceWithOutline(ctx, faceAtlas, faceName, faceFrame, scaleX, scaleY, rotation) {
-    const faceY = -12;
-    if (faceFrame === 9 || faceFrame === 10 || faceFrame === 11) {
-      const outlineOffsets = [
-        [-1.4, 0],
-        [1.4, 0],
-        [0, -1.4],
-        [0, 1.4],
-      ];
-      for (const [x, y] of outlineOffsets) {
-        faceAtlas?.draw(ctx, faceName, x, faceY + y, {
-          scaleX,
-          scaleY,
-          rotation,
-          anchorY: 0.65,
-          filter: "brightness(0)",
-          alpha: 0.85,
-        });
-      }
-    }
-    faceAtlas?.draw(ctx, faceName, 0, faceY, { scaleX, scaleY, rotation, anchorY: 0.65 });
-  }
-
-  renderFace(ctx, faceAtlas, atlasName, faceFrame, scaleX, scaleY, rotation) {
-    const faceName = `${atlasName}${faceFrame}`;
-    Peep.drawFaceWithOutline(ctx, faceAtlas, faceName, faceFrame, scaleX, scaleY, rotation);
-  }
-
-  hasRedMouthFace(faceFrame) {
-    return faceFrame === 9 || faceFrame === 10 || faceFrame === 11;
-  }
-
-  renderWeapon(ctx, sprites) {
-    const wConf = WEAPON_REGISTRY[this.weapon];
-    const isRanged = wConf?.ranged;
-
-    // === RANGED CHARGING CROSSHAIR ===
-    if (isRanged && this.laserPhase === "charging") {
-        ctx.save();
-        const aimX = this.laserAimX - this.x;
-        const aimY = this.laserAimY - this.y;
-        const t = performance.now() / 1000;
-        const pulse = 12 + Math.sin(t * 18) * 6;
-        const rotation = t * 4;
-        const isLaser = this.hasLaserEyes;
-        
-        // Outer glow ring
-        ctx.shadowBlur = 25;
-        ctx.shadowColor = isLaser ? "#ff0000" : "#ffd700";
-        ctx.strokeStyle = isLaser ? "rgba(255, 40, 40, 0.6)" : "rgba(255, 215, 0, 0.5)";
-        ctx.lineWidth = 3;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.arc(aimX, aimY, pulse + 8, rotation, rotation + Math.PI * 2);
-        ctx.stroke();
-        
-        // Inner solid ring
-        ctx.setLineDash([]);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(aimX, aimY, pulse, 0, Math.PI * 2);
-        ctx.stroke();
-        
-        // Crosshair lines
-        ctx.strokeStyle = isLaser ? "rgba(255, 60, 60, 0.7)" : "rgba(255, 215, 0, 0.7)";
-        ctx.lineWidth = 1;
-        const crossSize = pulse + 4;
-        ctx.beginPath();
-        ctx.moveTo(aimX - crossSize, aimY); ctx.lineTo(aimX - pulse * 0.5, aimY);
-        ctx.moveTo(aimX + crossSize, aimY); ctx.lineTo(aimX + pulse * 0.5, aimY);
-        ctx.moveTo(aimX, aimY - crossSize); ctx.lineTo(aimX, aimY - pulse * 0.5);
-        ctx.moveTo(aimX, aimY + crossSize); ctx.lineTo(aimX, aimY + pulse * 0.5);
-        ctx.stroke();
-        
-        // Center dot
-        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
-        ctx.beginPath();
-        ctx.arc(aimX, aimY, 2, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.restore();
-    }
-
-    // === RANGED FIRING VISUALS ===
-    if (isRanged && this.laserDuration > 0) {
-        ctx.save();
-        const targetRelX = this.laserAimX - this.x;
-        const targetRelY = (this.laserAimY - 20) - this.y;
-        
-        if (this.hasLaserEyes) {
-            const eyeY = -26;
-            const eyeXOffset = 5;
-            const eyes = [{ x: -eyeXOffset, y: eyeY }, { x: eyeXOffset, y: eyeY }];
-            
-            // Outer intense glow
-            ctx.shadowBlur = 30;
-            ctx.shadowColor = "#ff3300";
-            ctx.strokeStyle = "rgba(255, 80, 0, 0.5)";
-            ctx.lineWidth = 6;
-            eyes.forEach(eye => {
-                ctx.beginPath();
-                ctx.moveTo(eye.x, eye.y);
-                ctx.lineTo(targetRelX, targetRelY);
-                ctx.stroke();
-            });
-            
-            // Middle glow
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = "#ff6600";
-            ctx.strokeStyle = "rgba(255, 180, 80, 0.7)";
-            ctx.lineWidth = 3;
-            eyes.forEach(eye => {
-                ctx.beginPath();
-                ctx.moveTo(eye.x, eye.y);
-                ctx.lineTo(targetRelX, targetRelY);
-                ctx.stroke();
-            });
-            
-            // Core white-hot beam
-            ctx.shadowBlur = 0;
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-            ctx.lineWidth = 1.5;
-            eyes.forEach(eye => {
-                ctx.beginPath();
-                ctx.moveTo(eye.x, eye.y);
-                ctx.lineTo(targetRelX, targetRelY);
-                ctx.stroke();
-            });
-        } else {
-            // Gun / shotgun — barrel-aligned tracer, muzzle flash, recoil
-            const aimAngle = Math.atan2(this.laserAimY - this.y, this.laserAimX - this.x);
-            const gunX = this.flip * 24;
-            const gunY = -18;
-            const barrelTipX = gunX + Math.cos(aimAngle) * 20;
-            const barrelTipY = gunY + Math.sin(aimAngle) * 20;
-
-            // Recoil kick — strongest at start of firing
-            const fd = WEAPON_REGISTRY[this.weapon]?.fireDuration ?? 0.4;
-            const recoilAmount = 5 * (this.laserDuration / fd);
-            const recoilX = -Math.cos(aimAngle) * recoilAmount;
-            const recoilY = -Math.sin(aimAngle) * recoilAmount;
-            const startX = barrelTipX + recoilX;
-            const startY = barrelTipY + recoilY;
-
-            // Outer tracer glow
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = "#ffd700";
-            ctx.strokeStyle = "rgba(255, 215, 0, 0.85)";
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(startX, startY);
-            ctx.lineTo(targetRelX, targetRelY);
-            ctx.stroke();
-
-            // Core white tracer
-            ctx.shadowBlur = 0;
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(startX, startY);
-            ctx.lineTo(targetRelX, targetRelY);
-            ctx.stroke();
-
-            // Muzzle flash at barrel
-            ctx.save();
-            ctx.translate(startX, startY);
-            const flashIntensity = Math.min(1, this.laserDuration * 20);
-
-            // Bright star core
-            ctx.shadowBlur = 20;
-            ctx.shadowColor = "#fff";
-            ctx.fillStyle = `rgba(255, 255, 240, ${flashIntensity})`;
-            ctx.beginPath();
-            ctx.moveTo(4, 0); ctx.lineTo(1, 1); ctx.lineTo(0, 4); ctx.lineTo(-1, 1);
-            ctx.lineTo(-4, 0); ctx.lineTo(-1, -1); ctx.lineTo(0, -4); ctx.lineTo(1, -1);
-            ctx.closePath();
-            ctx.fill();
-
-            // Orange halo
-            ctx.shadowBlur = 12;
-            ctx.shadowColor = "#ffaa00";
-            ctx.fillStyle = `rgba(255, 180, 40, ${flashIntensity * 0.7})`;
-            ctx.beginPath();
-            ctx.arc(0, 0, 7 + Math.random() * 3, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-        }
-        
-        // Impact flash (shared)
-        ctx.shadowBlur = 40;
-        ctx.shadowColor = this.hasLaserEyes ? "#ff0000" : "#ffd700";
-        ctx.fillStyle = `rgba(255, 255, 200, ${Math.min(1, this.laserDuration * 3)})`;
-        ctx.beginPath();
-        ctx.arc(targetRelX, targetRelY, 8 + Math.random() * 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = this.hasLaserEyes ? `rgba(255, 100, 50, ${Math.min(1, this.laserDuration * 2)})` : `rgba(255, 215, 0, ${Math.min(1, this.laserDuration * 2)})`;
-        ctx.beginPath();
-        ctx.arc(targetRelX, targetRelY, 14 + Math.random() * 8, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.restore();
-        return;
-    }
-
-    const weaponConfig = WEAPON_REGISTRY[this.weapon];
-    // ... rest of existing renderWeapon
-    if (!weaponConfig || !weaponConfig.atlas || this.weapon === 'laser_eyes') return;
-    
-    const atlas = sprites.get(weaponConfig.atlas);
-    const isAttacking = this.state === "attack" && this.attackTime < CONSTANTS.COMBAT.ATTACK_WEAPON_FRAME_DURATION;
-    const frame = isAttacking ? 6 : 4;
-    const offsetX = this.flip * 24;
-    
-    let weaponRotation = this.flip < 0 ? -0.08 : 0.08;
-
-    // Dynamic Aiming
-    if (isAttacking && this.attackTarget) {
-      const dx = this.attackTarget.x - this.x;
-      const dy = (this.attackTarget.y - 20) - (this.y - 20); // Aim for chest
-      const angle = Math.atan2(dy, dx);
-      
-      if (this.weapon === "gun" || this.weapon === "shotgun") {
-        // Ranged weapons: Full aim, accounting for body flip
-        weaponRotation = this.flip < 0 ? angle + Math.PI : angle;
-      } else {
-        // Melee weapons: Clamped tilt for a natural swing
-        const tilt = Math.max(-0.6, Math.min(0.6, angle));
-        weaponRotation = this.flip < 0 ? tilt + Math.PI : tilt;
-      }
-    }
-
-    atlas?.draw(ctx, `weapon_${this.weapon}${frame}`, offsetX, -18, {
-      scaleX: 0.36 * this.flip,
-      scaleY: 0.36,
-      rotation: weaponRotation,
-    });
-  }
-
-  drawFallback(ctx) {
-    ctx.fillStyle = this.isRed ? "#d94b42" : "#efefef";
-    ctx.beginPath();
-    ctx.arc(0, -20, 20, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  renderHitFlash(ctx) {
-    if (this.hitFlash <= 0) return;
-    ctx.save();
-    ctx.globalAlpha = Math.min(CONSTANTS.PEEP.HIT_FLASH_ALPHA_MAX, this.hitFlash * CONSTANTS.PEEP.HIT_FLASH_ALPHA_MULT);
-    ctx.globalCompositeOperation = "screen";
-    ctx.fillStyle = "#ff473f";
-    ctx.beginPath();
-    ctx.arc(0, CONSTANTS.PEEP.HIT_FLASH_OFFSET_Y, CONSTANTS.PEEP.HIT_FLASH_RADIUS, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    const margin = CONSTANTS.MOVEMENT.WORLD_MARGIN;
+    this.x = Math.max(margin, Math.min(world.width - margin, this.x));
+    this.y = Math.max(margin, Math.min(world.height - margin, this.y));
+    if (this.x <= margin || this.x >= world.width - margin) this.vx *= -0.5;
+    if (this.y <= margin || this.y >= world.height - margin) this.vy *= -0.5;
   }
 
   getSnapshot() {
     return {
-      id: this.id,
-      x: this.x,
-      y: this.y,
-      vx: this.vx,
-      vy: this.vy,
-      hop: this.hop,
-      flip: this.flip,
-      state: this.state,
-      attackTime: this.attackTime,
-      hitFlash: this.hitFlash,
-      shoutText: this.shoutText,
-      shoutType: this.shoutType,
-      shoutTimer: this.shoutTimer,
-      shoutDuration: this.shoutDuration,
-      faceFrame: this.faceFrame,
-      weapon: this.weapon,
-      isRed: this.isRed,
-      isFlying: this.isFlying,
-      hasLaserEyes: this.hasLaserEyes,
-      hasSuperSpeed: this.hasSuperSpeed,
-      laserPhase: this.laserPhase,
-      laserDuration: this.laserDuration,
-      laserWindUp: this.laserWindUp,
-      laserAimX: this.laserAimX,
-      laserAimY: this.laserAimY,
+      id: this.id, name: this.name, x: this.x, y: this.y,
+      vx: this.vx, vy: this.vy, alive: this.alive,
+      health: this.health, maxHealth: this.maxHealth,
+      hunger: this.hunger, maxHunger: this.maxHunger,
+      thirst: this.thirst, maxThirst: this.maxThirst,
+      age: this.age, generation: this.generation,
+      bodyFrame: this.bodyFrame, faceFrame: this.faceFrame,
+      hop: this.hop, flip: this.flip,
       visualScale: this.visualScale,
-      loverId: this.loverId,
-      isLoverDead: this.isLoverDead,
-      bodyFrame: this.bodyFrame,
-      alive: this.alive,
-      attackTargetX: this.attackTarget?.x,
-      attackTargetY: this.attackTarget?.y,
+      genome: { ...this.genome },
+      state: this.state, diet: this.diet,
+      speciesId: this.speciesId,
+      speciesName: this.speciesName,
+      customTraits: [...this.customTraits],
+      vocabSize: this.productionVocab?.length || 0,
+      topVocab: (this.productionVocab || []).slice(0, 3).map(e => ({
+        tokens: [...e.tokens], situation: e.situation, confidence: e.confidence,
+      })),
+      episodicMemorySize: this.episodicMemory?.length || 0,
+      urgency: this.urgency,
     };
   }
 
-  static renderFromSnapshot(ctx, snapshot, sprites, spriteCache, time = 0) {
-    // Allow dead peeps to render so their bodies don't vanish in replays
-    
-    const phase = Math.sin(snapshot.hop * Math.PI * 2);
-    const bounce = 1 + Math.max(0, -phase) * 0.08;
-    const bob = snapshot.isFlying ? CONSTANTS.PEEP.FLY_HEIGHT : Math.abs(phase) * CONSTANTS.PEEP.BOB_HEIGHT;
-    const rotation = phase * 0.1;
-    const scale = snapshot.visualScale || 1;
-    const scaleX = CONSTANTS.PEEP.BASE_SCALE * bounce * snapshot.flip * scale;
-    const scaleY = CONSTANTS.PEEP.BASE_SCALE / bounce * scale;
-    const bodyAtlas = spriteCache?.body || sprites.get("body");
-    const redAtlas = spriteCache?.red || sprites.get("body_red");
-    
-    // Dead tribute: render as corpse
-    if (!snapshot.alive) {
-      const weaponIndex = ["gun", "bat", "shotgun", "axe"].indexOf(snapshot.weapon || null);
-      const corpseFrame = Math.max(0, (weaponIndex + 2) * 2 + snapshot.bodyFrame) % 12;
-      ctx.save();
-      ctx.translate(snapshot.x, snapshot.y - 4);
-      sprites.get("gore_bodies")?.draw(ctx, `gore_bodies${corpseFrame}`, 0, 0, { scale: CONSTANTS.EFFECTS.CORPSE.SCALE, rotation: 0 });
-      ctx.restore();
-      return;
-    }
-    
-    let faceAtlas;
-    let faceAtlasName;
-    if (snapshot.state === "charge" || snapshot.state === "attack") {
-      faceAtlas = spriteCache?.faceMurder || sprites.get("face_murder");
-      faceAtlasName = "face_murder";
-    } else if (snapshot.state === "flee" || snapshot.state === "retreat" || snapshot.state === "panic") {
-      faceAtlas = spriteCache?.faceNervous || sprites.get("face_nervous");
-      faceAtlasName = "face_nervous";
-    } else {
-      faceAtlas = spriteCache?.face || sprites.get("face");
-      faceAtlasName = "face";
-    }
-    let faceFrame = Math.random() < CONSTANTS.PEEP.FACE_BLINK_CHANCE ? 2 : snapshot.faceFrame;
-    if (snapshot.state === "panic") faceFrame = CONSTANTS.PEEP.PANIC_FACE_FRAME; // Crying face when panicking
-    const faceName = `${faceAtlasName}${faceFrame}`;
-    const bodyName = `body${snapshot.bodyFrame}`;
-
+  render(ctx, sprites, spriteCache) {
+    if (!this.alive) return;
+    const bobPhase = Math.sin(this.hop * Math.PI * 2);
+    const bob = Math.abs(bobPhase) * CONSTANTS.CREATURE_VISUAL.BOB_HEIGHT;
+    const sx = CONSTANTS.CREATURE_VISUAL.BASE_SCALE * (1 + Math.max(0, -bobPhase) * CONSTANTS.CREATURE_VISUAL.VISUAL_BOUNCE) * this.flip * this.visualScale;
+    const sy = CONSTANTS.CREATURE_VISUAL.BASE_SCALE / (1 + Math.max(0, -bobPhase) * CONSTANTS.CREATURE_VISUAL.VISUAL_BOUNCE) * this.visualScale;
     ctx.save();
-    ctx.translate(snapshot.x, snapshot.y - bob);
-    
-    // Body
-    bodyAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-    if (snapshot.isRed) redAtlas?.draw(ctx, `body_red${snapshot.bodyFrame}`, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-    
-    // Romance
-    if (snapshot.loverId) {
-        const loverShirtAtlas = sprites.get("lover_shirt");
-        const loveHatAtlas = sprites.get("lovehat");
-        loverShirtAtlas?.draw(ctx, `lover_shirt${snapshot.bodyFrame}`, 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-        loveHatAtlas?.draw(ctx, "lovehat0", 0, 0, { scaleX, scaleY, rotation, anchorY: 0.72 });
-    }
-    
-    // Face
-    Peep.drawFaceWithOutline(ctx, faceAtlas, faceName, faceFrame, scaleX, scaleY, rotation);
-    
-    // Laser eyes glow red during wind-up (replay)
-    if (snapshot.hasLaserEyes && snapshot.laserPhase === "charging") {
-      const intensity = 0.7 + Math.sin(time * 20) * 0.3;
-      ctx.save();
-      ctx.shadowBlur = 14;
-      ctx.shadowColor = `rgba(255, 0, 0, ${intensity})`;
-      ctx.fillStyle = `rgba(255, 60, 60, ${intensity})`;
-      ctx.beginPath(); ctx.arc(-6, -27, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -27, 3, 0, Math.PI * 2); ctx.fill();
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = `rgba(255, 200, 200, ${intensity * 0.6})`;
-      ctx.beginPath(); ctx.arc(-6, -27, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(6, -27, 5, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-    }
-    
-    const wConf = WEAPON_REGISTRY[snapshot.weapon];
-    const isRangedSnap = wConf?.ranged;
-    const isLaserSnap = snapshot.hasLaserEyes;
+    ctx.translate(this.x, this.y - bob);
 
-    // Ranged Visuals — charging crosshair
-    if (isRangedSnap && snapshot.laserPhase === "charging") {
-        ctx.save();
-        const aimX = snapshot.laserAimX - snapshot.x;
-        const aimY = snapshot.laserAimY - snapshot.y;
-        const pulse = 12 + Math.sin(time * 18) * 6;
-        const rotation = time * 4;
-        
-        ctx.shadowBlur = 25;
-        ctx.shadowColor = isLaserSnap ? "#ff0000" : "#ffd700";
-        ctx.strokeStyle = isLaserSnap ? "rgba(255, 40, 40, 0.6)" : "rgba(255, 215, 0, 0.5)";
-        ctx.lineWidth = 3;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.arc(aimX, aimY, pulse + 8, rotation, rotation + Math.PI * 2);
-        ctx.stroke();
-        
-        ctx.setLineDash([]);
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(aimX, aimY, pulse, 0, Math.PI * 2);
-        ctx.stroke();
-        
-        ctx.strokeStyle = isLaserSnap ? "rgba(255, 60, 60, 0.7)" : "rgba(255, 215, 0, 0.7)";
-        ctx.lineWidth = 1;
-        const crossSize = pulse + 4;
-        ctx.beginPath();
-        ctx.moveTo(aimX - crossSize, aimY); ctx.lineTo(aimX - pulse * 0.5, aimY);
-        ctx.moveTo(aimX + crossSize, aimY); ctx.lineTo(aimX + pulse * 0.5, aimY);
-        ctx.moveTo(aimX, aimY - crossSize); ctx.lineTo(aimX, aimY - pulse * 0.5);
-        ctx.moveTo(aimX, aimY + crossSize); ctx.lineTo(aimX, aimY + pulse * 0.5);
-        ctx.stroke();
-        
-        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
-        ctx.beginPath();
-        ctx.arc(aimX, aimY, 2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-    }
-    
-    // Ranged Visuals — firing beam / tracer
-    if (isRangedSnap && snapshot.laserDuration > 0) {
-        ctx.save();
-        const targetRelX = snapshot.laserAimX - snapshot.x;
-        const targetRelY = (snapshot.laserAimY - 20) - snapshot.y;
-        
-        if (isLaserSnap) {
-            const eyeY = -26;
-            const eyeXOffset = 5;
-            const eyes = [{ x: -eyeXOffset, y: eyeY }, { x: eyeXOffset, y: eyeY }];
-            
-            ctx.shadowBlur = 30;
-            ctx.shadowColor = "#ff3300";
-            ctx.strokeStyle = "rgba(255, 80, 0, 0.5)";
-            ctx.lineWidth = 6;
-            eyes.forEach(eye => {
-                ctx.beginPath();
-                ctx.moveTo(eye.x, eye.y);
-                ctx.lineTo(targetRelX, targetRelY);
-                ctx.stroke();
-            });
-            
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = "#ff6600";
-            ctx.strokeStyle = "rgba(255, 180, 80, 0.7)";
-            ctx.lineWidth = 3;
-            eyes.forEach(eye => {
-                ctx.beginPath();
-                ctx.moveTo(eye.x, eye.y);
-                ctx.lineTo(targetRelX, targetRelY);
-                ctx.stroke();
-            });
-            
-            ctx.shadowBlur = 0;
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-            ctx.lineWidth = 1.5;
-            eyes.forEach(eye => {
-                ctx.beginPath();
-                ctx.moveTo(eye.x, eye.y);
-                ctx.lineTo(targetRelX, targetRelY);
-                ctx.stroke();
-            });
-        } else {
-            // Gun / shotgun — barrel-aligned tracer, muzzle flash, recoil (replay)
-            const aimAngle = Math.atan2(snapshot.laserAimY - snapshot.y, snapshot.laserAimX - snapshot.x);
-            const gunX = snapshot.flip * 24;
-            const gunY = -18;
-            const barrelTipX = gunX + Math.cos(aimAngle) * 20;
-            const barrelTipY = gunY + Math.sin(aimAngle) * 20;
+    // Species color aura
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = this.speciesColor();
+    ctx.beginPath();
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
 
-            const fd = WEAPON_REGISTRY[snapshot.weapon]?.fireDuration ?? 0.4;
-            const recoilAmount = 5 * (snapshot.laserDuration / fd);
-            const recoilX = -Math.cos(aimAngle) * recoilAmount;
-            const recoilY = -Math.sin(aimAngle) * recoilAmount;
-            const startX = barrelTipX + recoilX;
-            const startY = barrelTipY + recoilY;
-
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = "#ffd700";
-            ctx.strokeStyle = "rgba(255, 215, 0, 0.85)";
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(startX, startY);
-            ctx.lineTo(targetRelX, targetRelY);
-            ctx.stroke();
-
-            ctx.shadowBlur = 0;
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(startX, startY);
-            ctx.lineTo(targetRelX, targetRelY);
-            ctx.stroke();
-
-            // Muzzle flash at barrel
-            ctx.save();
-            ctx.translate(startX, startY);
-            const flashIntensity = Math.min(1, snapshot.laserDuration * 20);
-            ctx.shadowBlur = 20;
-            ctx.shadowColor = "#fff";
-            ctx.fillStyle = `rgba(255, 255, 240, ${flashIntensity})`;
-            ctx.beginPath();
-            ctx.moveTo(4, 0); ctx.lineTo(1, 1); ctx.lineTo(0, 4); ctx.lineTo(-1, 1);
-            ctx.lineTo(-4, 0); ctx.lineTo(-1, -1); ctx.lineTo(0, -4); ctx.lineTo(1, -1);
-            ctx.closePath();
-            ctx.fill();
-            ctx.shadowBlur = 12;
-            ctx.shadowColor = "#ffaa00";
-            ctx.fillStyle = `rgba(255, 180, 40, ${flashIntensity * 0.7})`;
-            ctx.beginPath();
-            ctx.arc(0, 0, 7 + Math.random() * 3, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-        }
-        
-        ctx.shadowBlur = 40;
-        ctx.shadowColor = isLaserSnap ? "#ff0000" : "#ffd700";
-        ctx.fillStyle = `rgba(255, 255, 200, ${Math.min(1, snapshot.laserDuration * 3)})`;
-        ctx.beginPath();
-        ctx.arc(targetRelX, targetRelY, 8 + Math.random() * 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = isLaserSnap ? `rgba(255, 100, 50, ${Math.min(1, snapshot.laserDuration * 2)})` : `rgba(255, 215, 0, ${Math.min(1, snapshot.laserDuration * 2)})`;
-        ctx.beginPath();
-        ctx.arc(targetRelX, targetRelY, 14 + Math.random() * 8, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.restore();
-    }
-    
-    // Weapon
-    if (snapshot.weapon && snapshot.weapon !== "laser_eyes") {
-      const wAtlas = sprites.get(`weapons_${snapshot.weapon}`);
-      const isAttacking = snapshot.state === "attack" && snapshot.attackTime < CONSTANTS.COMBAT.ATTACK_WEAPON_FRAME_DURATION;
-      const wFrame = isAttacking ? 6 : 4;
-      const wOffsetX = snapshot.flip * 24;
-      let wRot = snapshot.flip < 0 ? -0.08 : 0.08;
-
-      if (isAttacking && snapshot.attackTargetX !== undefined) {
-        const dx = snapshot.attackTargetX - snapshot.x;
-        const dy = snapshot.attackTargetY - snapshot.y;
-        const angle = Math.atan2(dy, dx);
-        if (snapshot.weapon === "gun" || snapshot.weapon === "shotgun") {
-          wRot = snapshot.flip < 0 ? angle + Math.PI : angle;
-        } else {
-          const tilt = Math.max(-0.6, Math.min(0.6, angle));
-          wRot = snapshot.flip < 0 ? tilt + Math.PI : tilt;
-        }
-      }
-      wAtlas?.draw(ctx, `weapon_${snapshot.weapon}${wFrame}`, wOffsetX, -18, {
-        scaleX: 0.36 * snapshot.flip,
-        scaleY: 0.36,
-        rotation: wRot,
-      });
-    }
-
-    // Shout in Recap
-    if (snapshot.shoutText && snapshot.shoutTimer > 0) {
-        ctx.save();
-        const progress = 1 - snapshot.shoutTimer / Math.max(0.01, snapshot.shoutDuration || 2.5);
-        const alpha = Math.min(1, snapshot.shoutTimer / 0.25, (1 - progress) / 0.18);
-        ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-        
-        const y = -104 - progress * 18;
-        const paddingX = 10;
-        const h = 24;
-        ctx.font = "700 12px Segoe UI, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        const w = Math.min(180, ctx.measureText(snapshot.shoutText).width + paddingX * 2);
-        const color = snapshot.shoutType === "tactical" ? "#ffd866" : snapshot.shoutType === "loot" ? "#7de3ff" : "#ffffff";
-        
-        ctx.fillStyle = "rgba(10, 10, 14, 0.92)";
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        
-        const bx = -w / 2;
-        const by = y - h / 2;
-        const r = 8;
-        ctx.beginPath();
-        ctx.moveTo(bx + r, by);
-        ctx.arcTo(bx + w, by, bx + w, by + h, r);
-        ctx.arcTo(bx + w, by + h, bx, by + h, r);
-        ctx.lineTo(bx + w * 0.58, by + h);
-        ctx.lineTo(bx + w * 0.5, by + h + 8);
-        ctx.lineTo(bx + w * 0.42, by + h);
-        ctx.arcTo(bx, by + h, bx, by, r);
-        ctx.arcTo(bx, by, bx + w, by, r);
-        ctx.closePath();
-        
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = color;
-        ctx.fillText(snapshot.shoutText, 0, y);
-        ctx.restore();
-    }
+    ctx.scale(sx, sy);
+    const body = this.isRed ? spriteCache.red : spriteCache.body;
+    body?.draw(ctx, `body${this.bodyFrame}`, 0, 0, { scaleX: 1, scaleY: 1, rotation: 0, anchorY: CONSTANTS.CREATURE_VISUAL.BODY_ANCHOR_Y });
+    ctx.save();
+    ctx.translate(0, CONSTANTS.CREATURE_VISUAL.FACE_OFFSET_Y);
+    spriteCache.face?.draw(ctx, `face${this.faceFrame}`, 0, 0, { anchorY: CONSTANTS.CREATURE_VISUAL.FACE_ANCHOR_Y });
+    ctx.restore();
     ctx.restore();
   }
 
   renderMugshot(sprites) {
-    if (this._cachedMugshot) return this._cachedMugshot;
-    const canvas = document.createElement("canvas");
-    canvas.width = CONSTANTS.PEEP.MUGSHOT_WIDTH;
-    canvas.height = CONSTANTS.PEEP.MUGSHOT_HEIGHT;
-    const ctx = canvas.getContext("2d");
-
-    ctx.save();
-    ctx.translate(CONSTANTS.PEEP.MUGSHOT_WIDTH / 2, CONSTANTS.PEEP.MUGSHOT_TRANSLATE_Y);
-    const scaleX = CONSTANTS.PEEP.MUGSHOT_SCALE;
-    const scaleY = CONSTANTS.PEEP.MUGSHOT_SCALE;
-    const bodyAtlas = sprites.get("body");
-    const redAtlas = sprites.get("body_red");
-    const faceAtlas = sprites.get("face");
-    const bodyName = `body${this.bodyFrame}`;
-    const faceName = `face${this.faceFrame}`;
-
-    bodyAtlas?.draw(ctx, bodyName, 0, 0, { scaleX, scaleY, anchorY: 0.72 });
-    if (this.isRed) redAtlas?.draw(ctx, `body_red${this.bodyFrame}`, 0, 0, { scaleX, scaleY, anchorY: 0.72 });
-    faceAtlas?.draw(ctx, faceName, 0, -12 * scaleY, { scaleX, scaleY, anchorY: 0.65 });
-
-    ctx.restore();
-    this._cachedMugshot = canvas.toDataURL();
-    return this._cachedMugshot;
+    const c = document.createElement("canvas");
+    c.width = CONSTANTS.CREATURE_VISUAL.MUGSHOT_WIDTH;
+    c.height = CONSTANTS.CREATURE_VISUAL.MUGSHOT_HEIGHT;
+    const cx = c.getContext("2d");
+    const body = this.isRed ? sprites.get("body_red") : sprites.get("body");
+    const face = sprites.get("face");
+    cx.save();
+    cx.translate(CONSTANTS.CREATURE_VISUAL.MUGSHOT_WIDTH / 2, CONSTANTS.CREATURE_VISUAL.MUGSHOT_TRANSLATE_Y);
+    cx.scale(CONSTANTS.CREATURE_VISUAL.MUGSHOT_SCALE, CONSTANTS.CREATURE_VISUAL.MUGSHOT_SCALE);
+    body?.draw(cx, `body${this.bodyFrame}`, 0, 0, { scaleX: 1, scaleY: 1, anchorY: CONSTANTS.CREATURE_VISUAL.BODY_ANCHOR_Y });
+    cx.translate(0, CONSTANTS.CREATURE_VISUAL.FACE_OFFSET_Y);
+    face?.draw(cx, `face${this.faceFrame}`, 0, 0, { anchorY: CONSTANTS.CREATURE_VISUAL.FACE_ANCHOR_Y });
+    cx.restore();
+    return c.toDataURL();
   }
-}
-
-function clampStat(value) {
-  return Math.max(1, Math.min(10, Number(value) || 1));
 }

@@ -1,175 +1,33 @@
 const DEBUG = false;
 
 const GAME_CONSTANTS = {
-  dayLength: 60,
   worldDimensions: { width: 3000, height: 1800 },
   universeDimensions: { width: 7500, height: 4500 },
   spawnRadius: 460,
-  cornucopiaRadius: 120,
 };
 
-const STAT_REGISTRY = {
-  strength: { min: 1, max: 10 },
-  speed: { min: 1, max: 10 },
-  eyesight: { min: 1, max: 10 },
-  loyalty: { min: 1, max: 10 },
-  aggression: { min: 1, max: 10 },
-  friendliness: { min: 1, max: 10 },
-  honesty: { min: 1, max: 10 },
-  cunning: { min: 1, max: 10 },
-  stamina: { min: 1, max: 10 },
-};
-
-const WEAPON_REGISTRY = {
-  gun: { damage: 3, range: 180, atlas: "weapons_gun", description: "Long range firearm", droppable: true, ranged: true, windUp: 0.2, fireDuration: 0.08, cooldown: 1.2, dodgeDistance: 20 },
-  shotgun: { damage: 3, range: 125, atlas: "weapons_shotgun", description: "Medium range shotgun", droppable: true, ranged: true, windUp: 0.25, fireDuration: 0.12, cooldown: 1.5, dodgeDistance: 15 },
-  axe: { damage: 3, range: 56, atlas: "weapons_axe", description: "Heavy melee axe", droppable: true },
-  bat: { damage: 3, range: 52, atlas: "weapons_bat", description: "Swift melee bat", droppable: true },
-  laser_eyes: { damage: 6, range: 500, atlas: null, description: "Superman's vision", droppable: false, ranged: true, windUp: 0.35, fireDuration: 0.4, cooldown: 2.5, dodgeDistance: 30 },
-  fists: { damage: 1, range: 42, atlas: null, description: "Basic unarmed attack", droppable: false },
-};
-
-const TRAIT_LIBRARY = {
-  flight: {
-    name: "Flight",
-    abilities: { isFlying: true }
-  },
-  lasereyes: {
-    name: "Laser Eyes",
-    abilities: { hasLaserEyes: true },
-    startingWeapon: "laser_eyes"
-  },
-  bloodthirsty: {
-    name: "Bloodthirsty",
-    stats: { aggression: 10 }
-  },
-  sprinter: {
-    name: "Sprinter",
-    stats: { speed: 5 }
-  },
-  tank: {
-    name: "Tank",
-    stats: { strength: 3 },
-    abilities: { maxHealth: 8 }
-  },
-  sniper: {
-    name: "Sniper",
-    stats: { eyesight: 5 },
-    startingWeapon: "gun"
-  },
-  pacifist: {
-    name: "Pacifist",
-    stats: { friendliness: 8, aggression: 1 }
-  },
-  stealthy: {
-    name: "Stealthy",
-    abilities: { stealthModifier: 0.5 }
-  },
-  lucky: {
-    name: "Lucky",
-    abilities: { damageReduction: 0.2 }
-  },
-  scavenger: {
-    name: "Scavenger",
-    abilities: { scavengerMultiplier: 2.0 }
-  },
-  berserker: {
-    name: "Berserker",
-    stats: { aggression: 10, strength: 5 },
-    abilities: { maxHealthDelta: -2 }
-  },
-  glass_cannon: {
-    name: "Glass Cannon",
-    stats: { strength: 10, aggression: 8 },
-    abilities: { maxHealthDelta: -3 }
-  },
-  psychopath: {
-    name: "Psychopath",
-    stats: { aggression: 10 },
-    abilities: { healOnKill: 1 }
-  },
-  medic: {
-    name: "Medic",
-    abilities: { regeneration: 0.15 }
-  },
-  thick_skinned: {
-    name: "Thick Skinned",
-    abilities: { armor: 1 }
-  },
-  vampiric: {
-    name: "Vampiric",
-    abilities: { lifesteal: 0.4 }
-  },
-  giant: {
-    name: "Giant",
-    stats: { strength: 4 },
-    abilities: { maxHealth: 12, visualScale: 1.5, speedDebuff: 0.7 }
-  },
-  tiny: {
-    name: "Tiny",
-    stats: { speed: 4 },
-    abilities: { maxHealthDelta: -2, visualScale: 0.65 }
-  },
-  explosive: {
-    name: "Explosive",
-    abilities: { explodeOnDeath: true }
-  },
-  charismatic: {
-    name: "Charismatic",
-    stats: { friendliness: 10, loyalty: 5 },
-    abilities: { allianceBonus: 50, canCommand: true, recruitmentRange: 200 }
-  },
-  superspeed: {
-    name: "Super Speed",
-    abilities: { hasSuperSpeed: true }
-  },
-  momentum: {
-    name: "Momentum",
-    abilities: { hasMomentum: true }
-  },
-  armed: {
-    name: "Armed",
-    startingWeapon: "random"
-  },
-  gunslinger: {
-    name: "Gunslinger",
-    startingWeapon: "gun"
-  },
-  brawler: {
-    name: "Brawler",
-    startingWeapon: "bat"
-  },
-  woodsman: {
-    name: "Woodsman",
-    startingWeapon: "axe"
-  },
-  shotgunner: {
-    name: "Shotgunner",
-    startingWeapon: "shotgun"
-  }
-};
-
-const CHARACTER_LIBRARY = {
-  superman: {
-    name: "Superman",
-    traits: ["flight", "lasereyes"],
-    stats: { strength: 100, speed: 100 },
-    abilities: { maxHealth: 16 }
-  },
-  leader: {
-    name: "Leader",
-    traits: ["charismatic"],
-    stats: { friendliness: 20, loyalty: 10, eyesight: 8 }
-  },
-  a_train: {
-    name: "A-Train",
-    traits: ["superspeed", "momentum"],
-    stats: { strength: 5, speed: 50, eyesight: 8, loyalty: 4, aggression: 8, friendliness: 5 }
-  },
+const GENOME_REGISTRY = {
+  size: { min: 0.5, max: 2.0, category: "physical" },
+  speed: { min: 0.5, max: 2.5, category: "physical" },
+  metabolism: { min: 0.3, max: 2.0, category: "physical" },
+  fertility: { min: 0.2, max: 1.5, category: "physical" },
+  eyesight: { min: 0.5, max: 2.0, category: "physical" },
+  strength: { min: 0.5, max: 2.0, category: "physical" },
+  intelligence: { min: 0.3, max: 2.0, category: "physical" },
+  hungerWeight: { min: 0.2, max: 3.0, category: "personality" },
+  thirstWeight: { min: 0.2, max: 3.0, category: "personality" },
+  fearWeight: { min: 0.0, max: 3.0, category: "personality" },
+  mateWeight: { min: 0.0, max: 3.0, category: "personality" },
+  exploreWeight: { min: 0.0, max: 3.0, category: "personality" },
+  memoryTrust: { min: 0.0, max: 2.0, category: "personality" },
+  signalTrust: { min: 0.0, max: 2.0, category: "personality" },
+  riskTolerance: { min: 0.0, max: 2.0, category: "personality" },
+  socialPull: { min: 0.0, max: 2.0, category: "personality" },
+  aggressionBias: { min: 0.0, max: 2.0, category: "personality" },
 };
 
 // =============================================================================
-// UNHARDCODED CONSTANTS — The single source of truth for all game parameters
+// CONSTANTS — Single source of truth for all game parameters
 // =============================================================================
 const CONSTANTS = {
   CANVAS: {
@@ -189,83 +47,254 @@ const CONSTANTS = {
     MIN_HEIGHT: 240,
     LOG_MAX_ENTRIES: 30,
     TOOLTIP_WIDTH: 176,
-    TOOLTIP_HEIGHT: 118,
+    TOOLTIP_HEIGHT: 180,
     TOOLTIP_HEALTH_BAR_WIDTH: 28,
-    TOOLTIP_FONT_TITLE: '9px Segoe UI, sans-serif',
     TOOLTIP_FONT_NAME: '12px Segoe UI, sans-serif',
     TOOLTIP_FONT_STATS: '9px Segoe UI, sans-serif',
-    VICTORY_CROWN_COLOR: '#ffd700',
-    DEATH_LOG_CANNON_CLASS: 'cannon',
   },
 
-  TRIBUTE: {
+  CREATURE: {
     COUNT_MIN: 2,
     COUNT_MAX: 24,
     COUNT_DEFAULT: 12,
     NAME_MAX_LENGTH: 24,
+    HUNGER_MAX: 100,
+    HUNGER_START: 80,
+    THIRST_MAX: 100,
+    THIRST_START: 80,
+    HEALTH_MAX: 10,
+    HEALTH_START: 10,
+    MATURITY_AGE: 15,
+    MAX_AGE: 60,
+    REPRODUCTION_COOLDOWN: 8,
+    REPRODUCTION_HUNGER_COST: 30,
+    REPRODUCTION_RANGE: 80,
   },
 
-  DISTRICT: {
-    MIN: 1,
-    MAX: 12,
+  FOOD: {
+    COUNT: 40,
+    PICKUP_RANGE: 25,
+    HUNGER_VALUE: 25,
+    SPAWN_INTERVAL: 3,
+    SCALE: 0.35,
   },
 
-  DAY: {
-    LENGTH: 60,
-    NIGHT_TRANSITION_START: 5,
-    NIGHT_OVERLAY_OPACITY: 0.5,
-    NIGHT_VIGNETTE_MULTIPLIER: 1.5,
-    NIGHT_BG_COLOR: 'rgba(0, 0, 15, ',
+  WATER: {
+    PICKUP_RANGE: 30,
+    THIRST_RESTORE: 30,
+    RADIUS: 40,
+  },
+
+  RESOURCE_DRAIN: {
+    HUNGER_IDLE: 0.3,
+    HUNGER_WANDER: 0.8,
+    HUNGER_FLEE: 1.8,
+    THIRST_IDLE: 0.2,
+    THIRST_WANDER: 0.5,
+    THIRST_FLEE: 1.2,
+  },
+
+  BUSH: {
+    PICKUP_RANGE: 25,
+    COUNT_DEFAULT: 20,
+    MAX_FOOD_DEFAULT: 3,
+    REGROW_TIME_DEFAULT: 3,
+    MIN_COUNT: 5,
+    MAX_COUNT: 60,
+    MIN_MAX_FOOD: 1,
+    MAX_MAX_FOOD: 10,
+    MIN_REGROW: 1,
+    MAX_REGROW: 10,
+  },
+
+  HUNT: {
+    DAMAGE: 1,
+    ATTACK_RANGE: 24,
+    HUNGER_RESTORE_MULT: 8,
+  },
+
+  CUSTOM_TRAIT_LIBRARY: {
+    thick_hide: {
+      name: "Thick Hide", icon: "🛡",
+      desc: "Tougher skin from frequent injuries",
+      discover: { exposure: "injured", minTimes: 4, chance: 0.03 },
+      effect: { strength: 0.3, speed: -0.1 },
+    },
+    webbed_feet: {
+      name: "Webbed Feet", icon: "🦆",
+      desc: "Better at moving near water",
+      discover: { exposure: "near_water", minDuration: 30, chance: 0.025 },
+      effect: { speed: 0.25, metabolism: -0.1 },
+    },
+    fast_metabolism: {
+      name: "Fast Metabolism", icon: "⚡",
+      desc: "Quick energy but hungrier",
+      discover: { exposure: "starving", minTimes: 6, chance: 0.03 },
+      effect: { speed: 0.3, metabolism: 0.4 },
+    },
+    pack_hunter: {
+      name: "Pack Hunter", icon: "🐺",
+      desc: "Hunts better near allies",
+      discover: { exposure: "near_same_diet", minCount: 3, duration: 20, chance: 0.02 },
+      effect: { strength: 0.2, eyesight: 0.2 },
+    },
+    keen_eyes: {
+      name: "Keen Eyes", icon: "👁",
+      desc: "Exceptional vision from scanning for threats",
+      discover: { exposure: "fled", minTimes: 8, chance: 0.025 },
+      effect: { eyesight: 0.4, metabolism: 0.1 },
+    },
+    resilient: {
+      name: "Resilient", icon: "💪",
+      desc: "Withstood many hardships",
+      discover: { exposure: "low_health", minTimes: 5, chance: 0.02 },
+      effect: { strength: 0.2, metabolism: -0.15 },
+    },
+    explorer: {
+      name: "Explorer", icon: "🧭",
+      desc: "Adapted to covering ground",
+      discover: { exposure: "far_travel", minDistance: 5000, chance: 0.015 },
+      effect: { speed: 0.2, eyesight: 0.15 },
+    },
+  },
+
+  GENETICS: {
+    MUTATION_RATE: 0.12,
+    MUTATION_MAGNITUDE: 0.15,
+    DOMINANCE_WEIGHT: 0.7,
+  },
+
+  MEMORY: {
+    BASE_MAX: 3,
+    MAX_PER_INTEL: 8,
+    BASE_DURATION: 10,
+    DURATION_PER_INTEL: 80,
+    FUZZ_BASE: 180,
+    FUZZ_PER_INTEL: -80,
+    CONFIDENCE_DECAY: 0.02,
+    OUTCOME_CONFIRM_BOOST: 0.2,
+    OUTCOME_DEPLETED_PENALTY: -0.4,
+    OUTCOME_MISSING_PENALTY: -0.6,
+    CONFIRM_RANGE: 80,
+  },
+
+  EXPLORATION: {
+    CURIOSITY_BASE: 0.3,
+    CURIOSITY_PER_INTEL: 0.5,
+    EXPLORE_RANGE: 400,
+  },
+
+  SOCIAL: {
+    FOLLOW_RANGE: 150,
+    FOLLOW_CHANCE: 0.3,
+    FOLLOW_SPEED_BONUS: 1.1,
+  },
+
+  DRIVES: {
+    DECAY_RATE: 0.08,
+    BASELINE: { curiosity: 0.2, happiness: 0.5, fear: 0.05, loneliness: 0.15, aggression: 0.2 },
+    BOOSTS: {
+      curiosity: { explore: 0.3, new_memory: 0.1 },
+      happiness: { eat: 0.25, drink: 0.15, reproduce: 0.5, starve: -0.4, injured: -0.3 },
+      fear: { threat_seen: 0.4, injured: 0.3, safe_period: -0.05 },
+      loneliness: { near_ally: -0.15, isolated: 0.1, reproduce: -0.3 },
+      aggression: { hunt_success: 0.3, attacked: 0.4, idle: -0.02 },
+    },
+    EFFECTS: {
+      curiosity: { speed_bonus: 0.2, explore_bias: 1.5 },
+      happiness: { speed_bonus: 0.15, wander_variance: 0.3 },
+      fear: { flee_distance: 1.5, flee_speed: 1.2 },
+      loneliness: { mate_seek_range: 1.3 },
+      aggression: { hunt_range: 1.2, damage_bonus: 0.2 },
+    },
+  },
+
+  TRAIT_DISCOVERY: {
+    CHECK_INTERVAL: 5,
+    MAX_TRAITS: 4,
+    INHERIT_CHANCE: 0.55,
+    MUTATE_TRAIT_CHANCE: 0.08,
+  },
+
+  LANGUAGE: {
+    MAX_VOCAB: 32,
+    MAX_EPISODIC_MEMORY: 60,
+    TEMPORAL_WINDOW: 5,
+    SIGNAL_RANGE_BASE: 150,
+    SIGNAL_RANGE_PER_INTEL: 50,
+    SIGNAL_COOLDOWN: 2,
+    URGENCY_THRESHOLD_BASE: 0.8,
+    URGENCY_PER_INTEL: -0.15,
+    TOKENS_PER_BROADCAST_MIN: 1,
+    TOKENS_PER_BROADCAST_MAX: 4,
+    BAYES_PSEUDOCOUNT: 1,
+    INFERENCE_WINDOW: 6,
+    INHERIT_VOCAB_CHANCE: 0.6,
+    VOCAB_MUTATE_CHANCE: 0.12,
+    VOCAB_MUTATE_TOKEN_FLIP: 0.15,
+    MAX_TOKEN_VALUE: 65535,
+  },
+
+  HOUND: {
+    START_COUNT: 2,
+    MAX_PER_PREY: 0.08,
+    REPRODUCTION_COOLDOWN: 15,
+    SPEED_BASE: 1.8,
+    SPEED_RANGE: 0.3,
+    DAMAGE_BASE: 1.5,
+    DAMAGE_RANGE: 0.5,
+    ADAPT_RATE_BASE: 0.3,
+    ADAPT_RATE_RANGE: 0.6,
+    PERCEPTION_RANGE: 350,
+    PATROL_TIME: 6,
+    STALK_TIME: 4,
+    FLANK_SPEED: 1.3,
+    FLANK_DIST: 180,
+    RUSH_SPEED_MULT: 1.6,
+    RUSH_DIST: 100,
+    FEINT_DIST: 140,
+    FEINT_TIME: 2,
+    HUNGER_MAX: 80,
+    HUNGER_DRAIN: 0.2,
+    HUNGER_FROM_KILL: 40,
+    START_HEALTH: 8,
+    MUTATION_RATE: 0.15,
+    MUTATION_MAGNITUDE: 0.12,
+  },
+
+  SPECIATION: {
+    COMPATIBILITY_THRESHOLD: 0.15,
+    HYBRID_SPLIT_CHANCE: 0.05,
+    NAME_SIZE_PARTS: ["Tiny", "Small", "Medium", "Large", "Massive"],
+    NAME_SPEED_PARTS: ["Slow", "Steady", "Swift", "Rapid", "Blazing"],
+    NAME_STRENGTH_PARTS: ["Weak", "Mild", "Sturdy", "Strong", "Mighty"],
+    NAME_EYESIGHT_PARTS: ["Blind", "Dim", "Keen", "Sharp", "Eagle"],
+    NAME_DIET_PARTS: { herbivore: "Grazer", carnivore: "Hunter", omnivore: "Forager" },
+    COLOR_HUE_STEP: 137,
+    COLOR_SATURATION: 0.35,
+    COLOR_LIGHTNESS: 0.3,
   },
 
   CAMERA: {
-    DEFAULT_ZOOM: 0.45,
-    PLAYER_ZOOM: 0.75,
-    ZOOM_MIN: 0.3,
+    DEFAULT_ZOOM: 0.5,
+    ZOOM_MIN: 0.2,
     ZOOM_MAX: 2.0,
     ZOOM_STEP: 1.1,
     PAN_THRESHOLD: 2,
     TRACKING_ZOOM: 0.8,
-    FOCUS_DURATION_DEFAULT: 1.5,
-    FOCUS_DURATION_FATAL: 2.4,
-    FOCUS_DURATION_HIT: 1.1,
-    PLAYER_EASE_POW: 0.01,
     FOCUS_EASE_POW: 0.04,
   },
 
-  SLOW_MO: {
-    SCALE: 0.28,
-    DURATION: 1.15,
-    OVERLAY_ALPHA_BASE: 0.08,
-    TEXT_ALPHA: 0.85,
-    TEXT_Y: 28,
-    TEXT_X: 22,
-  },
-
-  PEEP: {
-    DEFAULT_HEALTH: 4,
-    DEFAULT_MAX_HEALTH: 4,
-    RED_CHANCE: 0.05,
-    BODY_FRAME_COUNT: 2,
-    FACE_FRAME_COUNT: 13,
-    FACE_BLINK_CHANCE: 0.008,
-    PANIC_FACE_FRAME: 12,
+  CREATURE_VISUAL: {
     BASE_SCALE: 0.65,
     VISUAL_BOUNCE: 0.08,
     BOB_HEIGHT: 10,
-    FLY_HEIGHT: -20,
-    HIT_FLASH_DURATION: 0.18,
-    HIT_FLASH_ALPHA_MAX: 0.55,
-    HIT_FLASH_ALPHA_MULT: 3,
-    HIT_FLASH_RADIUS: 34,
-    HIT_FLASH_OFFSET_Y: -28,
     BODY_ANCHOR_Y: 0.72,
     FACE_ANCHOR_Y: 0.65,
     FACE_OFFSET_Y: -12,
-    LASER_EYE_OFFSET_X: 6,
-    LASER_EYE_OFFSET_Y: -31,
-    LASER_EYE_GLOW_RADIUS_SMALL: 3,
-    LASER_EYE_GLOW_RADIUS_LARGE: 5,
+    RED_CHANCE: 0.05,
+    BODY_FRAME_COUNT: 2,
+    FACE_FRAME_COUNT: 13,
     MUGSHOT_WIDTH: 80,
     MUGSHOT_HEIGHT: 80,
     MUGSHOT_SCALE: 0.6,
@@ -274,341 +303,25 @@ const CONSTANTS = {
 
   MOVEMENT: {
     BASE_MULTIPLIER: 0.78,
-    STAT_COEFFICIENT: 0.045,
-    FLYING_BONUS: 1.4,
-    SUPER_SPEED_MULT: 15,
-    SUPER_SPEED_STATES: ['flee', 'charge'],
-    SPEED_DEBUFF_MIN: 0.2,
-    SPEED_DEBUFF_MAX: 2.0,
     VELOCITY_BLEND_BASE: 0.9,
     VELOCITY_FLIP_THRESHOLD: 0.05,
     PHYSICS_TICK_RATE: 60,
     WORLD_MARGIN: 24,
-    OPENING_DURATION: 4.5,
-    SKirtCenterRadius: 230,
-    SKirtCenterAngleOffset: 0.65,
   },
 
   SPEED: {
-    PLAYER_ARMED: 2.35,
-    PLAYER_UNARMED: 2.75,
-    RETREAT_ARMED: 2.35,
-    RETREAT_UNARMED: 2.7,
-    PANIC: 2.4,
-    SCAVENGE: 2.05,
-    CHARGE: 2.35,
-    RUSH_CENTER: 3.2,
-    GRAB_WEAPON: 2.8,
-    SKIRT_CENTER: 2.4,
-    FLEE_ARMED: 2.1,
-    FLEE_UNARMED: 2.75,
     WANDER: 1.15,
-    REGROUP: 1.65,
-    HIDE: 0.85,
+    FLEE: 2.5,
+    MATE_SEEK: 1.5,
   },
 
-  COMBAT: {
-    ATTACK_APPLY_TIME: 0.15,
-    ATTACK_MAX_TIME: 2.0,
-    ATTACK_DAMPING_BASE: 0.75,
-    ATTACK_RANGE_BUFFER: 10,
-    ATTACK_WEAPON_FRAME_DURATION: 0.75,
-    MELEE_STAT_DIVISOR: 3,
-    MELEE_STAT_THRESHOLD: 5,
-    MIN_DAMAGE: 0.5,
-    MOMENTUM_SPEED_MULT: 1.5,
-    MOMENTUM_DAMAGE_MULT: 1.5, // speedMult * this -> bonus damage
-  },
-
-  LASER: {
-    WIND_UP: 0.35,
-    FIRE_DURATION: 0.4,
-    COOLDOWN: 2.5,
-    DODGE_DISTANCE: 30,
-    RANGE_BUFFER: 10,
-    CHARGE_BLINK_RATE: 20,
-    CHARGE_GLOW_BLUR: 14,
-    CHARGE_PULSE_SIZE: 12,
-    CHARGE_PULSE_SPEED: 18,
-    BEAM_OUTER_BLUR: 30,
-    BEAM_MIDDLE_BLUR: 15,
-    BEAM_CORE_WIDTH: 1.5,
-    BEAM_OUTER_WIDTH: 6,
-    BEAM_MIDDLE_WIDTH: 3,
-    BEAM_IMPACT_FLASH_BLUR: 40,
-    BEAM_IMPACT_INNER_RADIUS: 8,
-    BEAM_IMPACT_OUTER_RADIUS: 14,
-  },
-
-  SUPER_SPEED: {
-    TRAIL_LENGTH: 8,
-    RECAP_TRAIL_LENGTH: 6,
-    GHOST_ALPHA_BASE: 0.25,
-    GHOST_BOUNCE: 10,
-    GHOST_SCALE_BOUNCE: 0.08,
-  },
-
-  WEAPON_ITEM: {
-    PICKUP_RANGE: 35,
-    DROP_SCATTER: 16,
-    GROUND_SCALE: 0.45,
-    GROUND_ALPHA: 0.08,
-    GROUND_RADIUS: 18,
-    FALLBACK_RADIUS: 7,
-    FALLBACK_COLOR: '#d6a91c',
-  },
-
-  EFFECTS: {
-    SPLAT: {
-      LIFE_MIN: 3,
-      LIFE_MAX: 5,
-      SCALE_MIN: 0.3,
-      SCALE_MAX: 0.7,
-      FRAMES: 3,
-    },
-    GORE: {
-      WEAPON_COUNT_MIN: 20,
-      WEAPON_COUNT_MAX: 30,
-      UNARMED_COUNT_MIN: 5,
-      UNARMED_COUNT_MAX: 12,
-      SPEED_MIN: 1.2,
-      SPEED_WEAPON_MAX: 5,
-      SPEED_UNARMED_MAX: 2.6,
-      LIFE_MIN: 2,
-      LIFE_MAX: 4,
-      Z_MIN: -6,
-      Z_MAX: -22,
-      VZ_MIN: -4,
-      VZ_MAX: -1,
-      VR_MIN: -0.16,
-      VR_MAX: 0.16,
-      SCALE_MIN: 0.4,
-      SCALE_MAX: 0.75,
-    },
-    HIT_GORE: {
-      FISTS_COUNT_MIN: 2,
-      FISTS_COUNT_MAX: 4,
-      WEAPON_COUNT_MIN: 4,
-      WEAPON_COUNT_MAX: 9,
-      SPEED_MIN: 0.6,
-      SPEED_MAX: 2.5,
-      GUN_SPEED_MAX: 3.8,
-      LIFE_MIN: 0.7,
-      LIFE_MAX: 1.5,
-      Z_MIN: -4,
-      Z_MAX: -14,
-      VZ_MIN: -3,
-      VZ_MAX: -0.8,
-      VR_MIN: -0.14,
-      VR_MAX: 0.14,
-      SCALE_MIN: 0.28,
-      SCALE_MAX: 0.55,
-    },
-    CORPSE: {
-      SCALE: 0.62,
-      ALPHA_MULT: 1.4,
-      LIFE: 10,
-      VX_MIN: -1.5,
-      VX_MAX: 1.5,
-      VY_MIN: -1.5,
-      VY_MAX: 1.5,
-      VZ_MIN: -3.5,
-      VZ_MAX: -1.5,
-      VZ_GRAVITY: 0.15,
-      ROTATION_SPEED: 4,
-    },
-    SHOCKWAVE: {
-      SPEED: 360,
-      START_RADIUS: 10,
-      LIFE: 0.6,
-      COLOR: 'rgba(255, 230, 120, ',
-      LINE_WIDTH: 3,
-    },
-    EXPLOSION: {
-      DAMAGE: 2,
-      RANGE: 150,
-    },
-  },
-
-  FOG: {
-    INNER_RADIUS_MULT: 0.35,
-    MID_STOP: 0.65,
-    MID_ALPHA: 0.55,
-    OUTER_ALPHA: 0.82,
-    BASE_ALPHA: 0.82,
-    DEFAULT_AWARENESS: 250,
-  },
-
-  ALLIANCE: {
-    VICINITY: 105,
-    START_STRENGTH_DISTRICT: 82,
-    START_STRENGTH_CROSS: 58,
-    DESIRE_THRESHOLD: 42,
-    LEADER_DESIRE_THRESHOLD: 30,
-    PROPOSAL_COOLDOWN: 6000,
-    BETRAYAL_COOLDOWN_MIN: 2,
-    BETRAYAL_COOLDOWN_MAX: 5,
-    POST_BETRAYAL_COOLDOWN_MIN: 8,
-    POST_BETRAYAL_COOLDOWN_MAX: 14,
-    MAX_MEMBERS_BEFORE_RECRUIT_CAP: 3,
-    MIN_STRENGTH_FOR_RECRUIT_CAP: 50,
-    FINAL_PRESSURE_STRENGTH_DRAIN: 0.08,
-    MIN_TOTAL_FOR_PRESSURE: 2,
-    TRUST_ATTACKED: 18,
-    ANGER_ATTACKED: 22,
-    FEAR_ATTACKED: 8,
-    TRUST_FOUGHT: 8,
-    BOND_FOUGHT: 10,
-    TRUST_KILLED_ALLY: 35,
-    ANGER_KILLED_ALLY: 45,
-    TRUST_BETRAYED: 60,
-    ANGER_BETRAYED: 55,
-    BOND_BETRAYED: 35,
-    TRUST_NEWBIE: 15,
-    DESIRE_FRIENDLINESS_MULT: 6,
-    DESIRE_LOYALTY_MULT: 2,
-    DESIRE_AGGRESSION_PENALTY_MULT: 3,
-    DESIRE_DIST_PENALTY_MULT: 0.04,
-    DESIRE_TRUST_MULT: 0.4,
-    DESIRE_BOND_MULT: 0.35,
-    DESIRE_DANGER_NEED: 14,
-    DESIRE_ANGER_PENALTY_MULT: 0.9,
-    BETRAYAL_AGGRESSION_MULT: 9,
-    BETRAYAL_LOYALTY_PENALTY_MULT: 10,
-    BETRAYAL_BOND_PENALTY_MULT: 0.8,
-    BETRAYAL_TRUST_PENALTY_MULT: 0.45,
-    BETRAYAL_WEAPON_OPPORTUNITY: 10,
-    BETRAYAL_HEALTH_OPPORTUNITY: 16,
-    BETRAYAL_LATE_PRESSURE: 30,
-    BETRAYAL_SCORE_MIN: 35,
-  },
-
-  ROMANCE: {
-    MIN_COURTSHIP: 15,
-    PROXIMITY_RANGE: 120,
-    MIN_TRUST: 80,
-    MIN_BOND: 70,
-    MOURN_TIMER: 20,
-  },
-
-  DIALOGUE: {
-    DEFAULT_DURATION: 2.5,
-    TACTICAL_DURATION: 1.2,
-    DEFEND_DURATION: 1.5,
-    PANIC_DURATION: 3.0,
-    AI_BRAIN_DURATION: 3.0,
-    SOCIAL_DURATION: 2.0,
-    LOOT_DURATION: 2.0,
-    GOSSIP_DURATION: 2.5,
-    SHOUT_HEIGHT_OFFSET: 110,
-    SHOUT_RISE: 20,
-    MAX_WIDTH: 180,
-    PADDING_X: 10,
-    BUBBLE_HEIGHT: 24,
-    BUBBLE_RADIUS: 8,
-    TAIL_LEFT: 0.42,
-    TAIL_CENTER: 0.5,
-    TAIL_RIGHT: 0.58,
-    TAIL_LENGTH: 8,
-    RESPONSE_CHANCE: 0.2,
-    GOSSIP_RESPONSE_CHANCE: 0.35,
-    MAX_DIST: 250,
-    LISTEN_WINDOW: 0.3,
-    CONVERSATION_COOLDOWN: 5.0,
-    LOOT_SHOUT_COOLDOWN: 15000,
-    ALLY_LOOT_COOLDOWN: 8000,
-    LOOT_SHARE_DIST: 300,
-    LOOT_VALIDATION_DIST: 8,
-    ALLY_LOOT_MULT: 1.35,
-    LOOT_TARGET_TTL: 6500,
-  },
-
-  GOSSIP: {
-    VICINITY: 100,
-    COOLDOWN: 7.0,
-    SHARE_CHANCE: 0.12,
-    MAX_ENTRIES: 8,
-    BELIEF_DIRECT: 1.0,
-    BELIEF_GOSSIP: 0.65,
-    BELIEF_LOSS_PER_HOP: 0.2,
-    EMOTION_MULT: 0.5,
-    OBSERVE_RANGE_MULT: 1.8,
-    ACKNOWLEDGE_CHANCE: 0.6,
-    DIALOGUE_CHANCE: 0.7,
-    TRUST_IMPACT_KILL: 12,
-    TRUST_IMPACT_BETRAYAL: 18,
-    FEAR_IMPACT_KILL: 10,
-    ANGER_IMPACT_BETRAYAL: 15,
-  },
-
-  REGROUP: {
-    MIN_RANGE: 60,
-    TRIGGER_RANGE: 200,
-    RANGE_MULT_REGROUPING: 1.4,
-    RANGE_MULT_DEFAULT: 1.15,
-    WANTS_COMPANY_FRIENDLINESS_LOYALTY: 11,
-    WANTS_COMPANY_HEALTH: 2,
-  },
-
-  HIDE: {
-    ALIVE_THRESHOLD: 6,
-    AGGRESSION_THRESHOLD: 3,
-    AGGRESSION_WEAPON_THRESHOLD: 5,
-    CHANCE: 0.02,
-  },
-
-  AI: {
-    BRAIN_INTERVAL: 8.5,
-    BRAIN_RESET: 8.0,
-    OVERRIDE_DURATION: 10000,
-    CONCURRENCY: 3,
-    EMERGENCY_THREAT_RANGE: 80,
-    API_TEST_TIMEOUT: 3000,
-    API_TEST_DEBOUNCE: 1500,
-    TEMPERATURE: 0.7,
-    MAX_TOKENS: 256,
-    NEARBY_ENEMIES_MAX: 3,
-    NEARBY_ALLIES_MAX: 3,
-    NEARBY_WEAPONS_MAX: 3,
-    ALLY_RANGE_MULT: 1.5,
-    MEMORIES_CONTEXT_MAX: 5,
-    MEMORIES_MAX: 12,
-    MODEL_GITHUB: 'gpt-4o-mini',
-    MODEL_GEMINI: 'gemini-1.5-flash',
-    GITHUB_ENDPOINT: 'https://models.inference.ai.azure.com/chat/completions',
-    GEMINI_ENDPOINT_TEMPLATE: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
-  },
-
-  PROFILE: {
-    RUNNER_CHANCE: 0.25,
-    SCAVENGER_CHANCE: 0.52,
-    WANDERER_CHANCE: 0.76,
-    HUNTER_CHANCE: 0.95,
-    AWARENESS_BASE: 120,
-    AWARENESS_PER_EYESIGHT: 24,
-    CAUTION_FORMULA_BASE: 11,
-    CENTER_TIME_MIN: 0.4,
-    CENTER_TIME_MAX: 1.8,
-  },
-
-  RECAP: {
-    ROLLING_HISTORY_MAX: 180,
-    CAPTURE_FRAMES: 60,
-    REPLAY_SCALE: 0.8,
-    REPLAY_BASE_ZOOM: 1.0,
-    CLIP_PADDING: 250,
-    REPLAY_CANVAS_WIDTH: 400,
-    REPLAY_CANVAS_HEIGHT: 250,
-    REPLAY_FPS: 60,
-    HIGHLIGHT_MAX_PER_DAY: 3,
-    BLOODBATH_THRESHOLD: 3,
-    BLOODBATH_WINDOW: 10000,
-    DEATH_FRAME_FALLBACK: 0.75,
-    DYNAMIC_CLIP_ZOOM_MIN: 0.15,
-    DYNAMIC_CLIP_ZOOM_MAX: 1.5,
-    SCANLINES_GAP: 4,
-    SCANLINE_HEIGHT: 2,
-    SCANLINE_ALPHA: 0.1,
+  BACKGROUND: {
+    FILL_COLOR: '#101015',
+    GRID_COLOR: 'rgba(255,255,255,0.025)',
+    GRID_LINE_WIDTH: 1,
+    FALLBACK_GRID_COLOR: '#1a1a24',
+    FALLBACK_GRID_LINE_WIDTH: 2,
+    FALLBACK_GRID_SPACING: 100,
   },
 
   CURSOR: {
@@ -619,143 +332,15 @@ const CONSTANTS = {
     FOLLOW_POW: 0.65,
   },
 
-  GOAL_LOGGING: {
-    COOLDOWN: 5000,
-    IGNORED_GOALS: ['wander', 'rush_center'],
+  MAP: {
+    BUSH_COUNT_DEFAULT: 20,
+    MAX_FOOD_PER_BUSH_DEFAULT: 3,
+    BUSH_REGROW_DEFAULT: 3,
+    WATER_COUNT_DEFAULT: 12,
   },
 
-  EVENT: {
-    TRIGGER_DELAY: 1000,
-    API_TEST_DEBOUNCE: 1500,
-    START_BTN_TIMEOUT: 1200,
-  },
-
-  BETRAYAL_PRESSURE: {
-    ALIVE_2: 38,
-    ALIVE_3: 30,
-    ALIVE_5: 20,
-    ALIVE_8: 10,
-  },
-
-  FLEE: {
-    HYSTERESIS_FLEE_MULT: 1.5,
-    HYSTERESIS_HUNT_MULT: 0.8,
-    ANGER_COURAGE_MULT: 0.75,
-    AGGRESSION_COURAGE_THRESHOLD: 11,
-    HEALTH_COURAGE_THRESHOLD: 1.2,
-    REVENGE_SHOUT_CHANCE: 0.05,
-  },
-
-  OPENING_GOAL: {
-    BERSERker_AGGRESSION: 8,
-    HUNTER_AGGRESSION: 6,
-    GRAB_WEAPON_SPEED: 7,
-    GRAB_WEAPON_AGGRESSION: 6,
-    FLEE_AGGRESSION: 3,
-    SKIRT_EYESIGHT: 7,
-    SKIRT_AGGRESSION: 5,
-    RUSH_CENTER_CHANCE: 0.65,
-  },
-
-  NIGHT: {
-    OVERLAY_COLOR: 'rgba(0, 0, 15, ',
-    VIGNETTE_INNER_RADIUS: 100,
-    VIGNETTE_OUTER_RADIUS: 720,
-    VIGNETTE_COLOR: 'rgba(0,0,5, ',
-  },
-
-  BACKGROUND: {
-    FILL_COLOR: '#101015',
-    GRID_COLOR: 'rgba(255,255,255,0.025)',
-    GRID_LINE_WIDTH: 1,
-    TILE_GRID_SIZE: 3,
-    TILE_OFFSET_MULT: 1.5,
-    FALLBACK_GRID_COLOR: '#1a1a24',
-    FALLBACK_GRID_LINE_WIDTH: 2,
-    FALLBACK_GRID_SPACING: 100,
-  },
-
-  STAMINA: {
-    MAX: 100,
-    START: 100,
-    DRAIN_CHARGE: 8,
-    DRAIN_FLEE: 7,
-    DRAIN_RUSH: 6,
-    DRAIN_PANIC: 10,
-    DRAIN_ATTACK: 4,
-    REGEN_WANDER: 4,
-    REGEN_HIDE: 7,
-    REGEN_IDLE: 5,
-    LOW_THRESHOLD: 25,
-    EXHAUSTED_THRESHOLD: 10,
-    SPEED_PENALTY_LOW: 0.7,
-    SPEED_PENALTY_EXHAUSTED: 0.45,
-  },
-
-  DANGER_ZONE: {
-    RADIUS_BASE: 140,
-    RADIUS_PER_SEVERITY: 20,
-    MAX_RADIUS: 320,
-    LIFETIME: 30,
-    DECAY_START: 18,
-    WANDER_AVOIDANCE: 0.6,
-    ENEMY_ROUTE_PENALTY: 28,
-    MAX_PER_PEEP: 8,
-  },
-
-  REVENGE: {
-    DURATION: 45,
-    COOLDOWN: 20,
-    EYESIGHT_MULT: 1.4,
-    PRIORITY_SCORE: 200,
-  },
-
-  BAIT: {
-    MIN_CUNNING: 6,
-    SCAN_RADIUS: 220,
-    LURK_OFFSET: 55,
-    ENGAGE_RANGE: 70,
-    DURATION: 12,
-    COOLDOWN: 18,
-    MIN_WEAPONS_NEARBY: 1,
-  },
-
-  COMBAT_BARK: {
-    HIT_CHANCE: 0.5,
-    KILL_CHANCE: 1.0,
-    MISS_CHANCE: 0.35,
-    COOLDOWN: 1.2,
-  },
-
-  GAME_PHASE: {
-    OPENING_SECS: 10,
-    EARLY_ALIVE_FRAC: 0.66,
-    LATE_ALIVE: 5,
-    ENDGAME_ALIVE: 3,
-  },
-
-  CASUAL_CHAT: {
-    CHANCE: 0.012,
-    ALLY_PROXIMITY: 140,
-    COOLDOWN: 16,
-    RESPONSE_CHANCE: 0.7,
-    MIN_bond: 35,
-    STRESS_MAX: 0.25,
-    DURATION: 3.0,
-  },
-
-  ALLIANCE_POSTURE: {
-    DECISION_INTERVAL: 6,
-    DEFENSIVE_OUTNUMBER_MULT: 1.3,
-    AGGRESSIVE_HUNT_MULT: 1.3,
-    FLANK_ANGLE: 2.4,
-    BAIT_MEMBER_CUNNING_MIN: 6,
-    SWAP_THRESHOLD: 4,
-  },
-
-  COLLISION: {
-    SOFT_RADIUS: 40,
-    SOFT_FORCE: 1.2,
-    SOFT_ALLY_REDUCTION: 0.5,
+  EVOLUTION: {
+    GENERATION_LOG_INTERVAL: 5,
+    TRAIT_HISTORY_MAX: 100,
   },
 };
