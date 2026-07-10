@@ -66,6 +66,59 @@
     </div>
 
     <button id="start-btn">START SIMULATION</button>
+    <button id="research-btn" class="research-toggle">🧪 RESEARCH</button>
+  </div>
+</div>
+
+<!-- === RESEARCH PANEL === -->
+<div id="research-overlay" style="display:none">
+  <div id="research-panel">
+    <div id="research-header">
+      <h2>🧪 Research Mode</h2>
+      <button id="research-close" class="research-close-btn">✕</button>
+    </div>
+
+    <div id="research-controls">
+      <label>Seed: <input type="number" id="research-seed" value="42" min="0" max="999999"></label>
+      <label>Max Gens: <input type="number" id="research-max-gens" value="500" min="10" max="5000"></label>
+      <label>Creatures: <input type="number" id="research-creature-count" value="12" min="2" max="24"></label>
+      <button id="research-run-btn">▶ Run</button>
+      <button id="research-stop-btn" style="display:none">■ Stop</button>
+    </div>
+
+    <div id="research-status" class="research-status">Ready</div>
+
+    <div id="research-tab-bar">
+      <button class="research-tab active" data-tab="generations">Generations</button>
+      <button class="research-tab" data-tab="species">Species</button>
+      <button class="research-tab" data-tab="speciation">Speciation</button>
+      <button class="research-tab" data-tab="charts">Charts</button>
+    </div>
+
+    <div id="research-export-bar" style="display:none">
+      <button id="research-export-csv">⬇ CSV</button>
+      <button id="research-export-json">⬇ JSON</button>
+    </div>
+
+    <div id="research-content">
+      <div class="research-tab-content active" id="research-tab-generations">
+        <div id="research-gen-table"></div>
+      </div>
+      <div class="research-tab-content" id="research-tab-species">
+        <div id="research-species-table"></div>
+      </div>
+      <div class="research-tab-content" id="research-tab-speciation">
+        <div id="research-speciation-log"></div>
+      </div>
+      <div class="research-tab-content" id="research-tab-charts">
+        <div class="chart-grid">
+          <div class="chart-cell"><canvas id="chart-population"></canvas></div>
+          <div class="chart-cell"><canvas id="chart-traits"></canvas></div>
+          <div class="chart-cell"><canvas id="chart-diversity"></canvas></div>
+          <div class="chart-cell"><canvas id="chart-language"></canvas></div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -93,6 +146,7 @@
 <script src="js/hound.js"></script>
 <script src="js/cursor-entity.js"></script>
 <script src="js/main.js"></script>
+<script src="js/research.js"></script>
 
 </body>
 </html>

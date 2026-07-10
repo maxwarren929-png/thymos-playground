@@ -144,6 +144,21 @@ function setupUi() {
   }
 
   setCreatureCount(creatureCount);
+
+  // Research panel toggle
+  const researchBtn = document.getElementById("research-btn");
+  const researchOverlay = document.getElementById("research-overlay");
+  const researchClose = document.getElementById("research-close");
+  if (researchBtn && researchOverlay && researchClose) {
+    researchBtn.addEventListener("click", () => {
+      researchOverlay.style.display = "flex";
+      els.setupOverlay.style.display = "none";
+    });
+    researchClose.addEventListener("click", () => {
+      researchOverlay.style.display = "none";
+      els.setupOverlay.style.display = "flex";
+    });
+  }
 }
 
 function setCreatureCount(count, existingData = null) {
@@ -398,7 +413,7 @@ function loop(now) {
   if (gameState === "playing" && !isPaused) {
     update(dt, rawDt);
   }
-  render();
+  if (gameState !== "research") render();
   requestAnimationFrame(loop);
 }
 
@@ -452,8 +467,8 @@ function update(dt, rawDt) {
     state.avgTraits = avg;
   }
 
-  // Track trait history
-  if (state.creatures.filter(c => c.alive).length > 0) {
+  // Track trait history (skip in research mode — research.js collects its own snapshots)
+  if (gameState !== "research" && state.creatures.filter(c => c.alive).length > 0) {
     state.traitHistory.push({
       generation: state.generation,
       avgTraits: { ...state.avgTraits },
@@ -465,9 +480,11 @@ function update(dt, rawDt) {
     }
   }
 
-  updateCamera(dt);
-  clampCamera();
-  updateSidebar();
+  if (gameState !== "research") {
+    updateCamera(dt);
+    clampCamera();
+    updateSidebar();
+  }
 }
 
 function createWorldContext() {
